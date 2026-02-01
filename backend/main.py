@@ -2098,6 +2098,607 @@ async def get_match_summary_endpoint(match_id: int = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================
+# ADVANCED ANALYTICS ENDPOINTS
+# ============================================
+
+@app.get("/api/player/compare")
+async def compare_players(player1_id: int, player2_id: int, match_id: int = None):
+    """Compare two players side by side."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        
+        # Resolve player names
+        _, name1 = _resolve_player_from_lineups(lineups, player_id=player1_id)
+        _, name2 = _resolve_player_from_lineups(lineups, player_id=player2_id)
+        
+        if not name1 or not name2:
+            raise HTTPException(status_code=404, detail="One or both players not found")
+        
+        # Get stats for both players
+        stats1, highlights1, lowlights1 = get_player_data(events, name1, player_id=player1_id)
+        stats2, highlights2, lowlights2 = get_player_data(events, name2, player_id=player2_id)
+        
+        # Get positions for heat maps
+        events_list = list(events.values())
+        positions1 = []
+        positions2 = []
+        
+        for event in events_list:
+            loc = event.get("location")
+            if not loc:
+                continue
+            pid = event.get("player", {}).get("id")
+            etype = event.get("type", {}).get("name", "")
+            if pid == player1_id:
+                positions1.append({"x": round(loc[0], 1), "y": round(loc[1], 1), "type": etype})
+            elif pid == player2_id:
+                positions2.append({"x": round(loc[0], 1), "y": round(loc[1], 1), "type": etype})
+        
+        return {
+            "match_id": config["match_id"],
+            "player1": {
+                "player_id": player1_id,
+                "name": name1,
+                "stats": stats1 if "error" not in stats1 else {},
+                "positions": positions1,
+                "highlights_count": len(highlights1),
+                "lowlights_count": len(lowlights1),
+            },
+            "player2": {
+                "player_id": player2_id,
+                "name": name2,
+                "stats": stats2 if "error" not in stats2 else {},
+                "positions": positions2,
+                "highlights_count": len(highlights2),
+                "lowlights_count": len(lowlights2),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/momentum")
+async def get_match_momentum(match_id: int = None, interval_minutes: int = 5):
+    """Get momentum tracker showing team dominance over time intervals."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else ["Team A", "Team B"]
+        
+        events_list = sorted(events.values(), key=lambda e: (e.get("period", 1), e.get("minute", 0), e.get("second", 0)))
+        
+        # Track momentum in intervals
+        momentum_data = []
+        current_interval_start = 0
+        
+        # Process up to 120 minutes (including extra time)
+        for interval_start in range(0, 125, interval_minutes):
+            interval_end = interval_start + interval_minutes
+            
+            team_stats = {team: {"passes": 0, "shots": 0, "possession_events": 0, "xT": 0.0, "pressure_events": 0} for team in teams}
+            
+            for event in events_list:
+                minute = event.get("minute", 0)
+                if minute < interval_start or minute >= interval_end:
+                    continue
+                
+                team = event.get("team", {}).get("name")
+                if team not in team_stats:
+                    continue
+                
+                etype = event.get("type", {}).get("name", "")
+                loc = event.get("location")
+                
+                if etype == "Pass":
+                    team_stats[team]["passes"] += 1
+                    team_stats[team]["possession_events"] += 1
+                    if loc:
+                        end_loc = event.get("pass", {}).get("end_location")
+                        if end_loc:
+                            team_stats[team]["xT"] += calculate_xt_delta(loc, end_loc)
+                elif etype == "Shot":
+                    team_stats[team]["shots"] += 1
+                elif etype == "Carry":
+                    team_stats[team]["possession_events"] += 1
+                elif etype == "Pressure":
+                    team_stats[team]["pressure_events"] += 1
+            
+            # Calculate dominance score for each team
+            total_possession = sum(ts["possession_events"] for ts in team_stats.values()) or 1
+            
+            interval_data = {
+                "interval_start": interval_start,
+                "interval_end": interval_end,
+                "teams": {}
+            }
+            
+            for team, ts in team_stats.items():
+                possession_pct = round(ts["possession_events"] / total_possession * 100)
+                dominance = ts["passes"] * 0.3 + ts["shots"] * 2 + ts["xT"] * 10 + ts["pressure_events"] * 0.5
+                interval_data["teams"][team] = {
+                    "possession_pct": possession_pct,
+                    "passes": ts["passes"],
+                    "shots": ts["shots"],
+                    "xT": round(ts["xT"], 3),
+                    "pressure_events": ts["pressure_events"],
+                    "dominance_score": round(dominance, 2),
+                }
+            
+            momentum_data.append(interval_data)
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "teams": teams,
+            "interval_minutes": interval_minutes,
+            "momentum": momentum_data,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/score-impact")
+async def get_score_impact(match_id: int = None):
+    """Analyze team/player performance when leading, trailing, or drawing."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else []
+        
+        events_list = sorted(events.values(), key=lambda e: (e.get("period", 1), e.get("minute", 0), e.get("second", 0)))
+        
+        # Track score through match
+        score = {team: 0 for team in teams}
+        
+        # Stats by game state
+        stats_by_state = {
+            "leading": {team: {"passes": 0, "shots": 0, "goals": 0, "xT": 0.0, "complete_passes": 0} for team in teams},
+            "trailing": {team: {"passes": 0, "shots": 0, "goals": 0, "xT": 0.0, "complete_passes": 0} for team in teams},
+            "drawing": {team: {"passes": 0, "shots": 0, "goals": 0, "xT": 0.0, "complete_passes": 0} for team in teams},
+        }
+        
+        goal_times = []
+        
+        for event in events_list:
+            team = event.get("team", {}).get("name")
+            etype = event.get("type", {}).get("name", "")
+            
+            # Check for goals to update score
+            if etype == "Shot" and event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                if team in score:
+                    score[team] += 1
+                    goal_times.append({
+                        "minute": event.get("minute", 0),
+                        "team": team,
+                        "score": dict(score),
+                    })
+            
+            if team not in teams:
+                continue
+            
+            # Determine game state for this team
+            other_team = [t for t in teams if t != team]
+            if other_team:
+                other = other_team[0]
+                if score[team] > score[other]:
+                    state = "leading"
+                elif score[team] < score[other]:
+                    state = "trailing"
+                else:
+                    state = "drawing"
+            else:
+                state = "drawing"
+            
+            loc = event.get("location")
+            
+            if etype == "Pass":
+                stats_by_state[state][team]["passes"] += 1
+                if "outcome" not in event.get("pass", {}):
+                    stats_by_state[state][team]["complete_passes"] += 1
+                if loc:
+                    end_loc = event.get("pass", {}).get("end_location")
+                    if end_loc:
+                        stats_by_state[state][team]["xT"] += calculate_xt_delta(loc, end_loc)
+            elif etype == "Shot":
+                stats_by_state[state][team]["shots"] += 1
+                if event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                    stats_by_state[state][team]["goals"] += 1
+        
+        # Calculate pass accuracy for each state
+        result = {"leading": {}, "trailing": {}, "drawing": {}}
+        for state, team_stats in stats_by_state.items():
+            for team, ts in team_stats.items():
+                acc = round(ts["complete_passes"] / ts["passes"] * 100) if ts["passes"] > 0 else 0
+                result[state][team] = {
+                    "passes": ts["passes"],
+                    "pass_accuracy": f"{acc}%",
+                    "shots": ts["shots"],
+                    "goals": ts["goals"],
+                    "xT": round(ts["xT"], 3),
+                }
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "teams": teams,
+            "final_score": score,
+            "goal_times": goal_times,
+            "stats_by_state": result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/substitutions")
+async def get_substitution_impact(match_id: int = None):
+    """Analyze impact of substitutions on team performance."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else []
+        
+        events_list = sorted(events.values(), key=lambda e: (e.get("period", 1), e.get("minute", 0), e.get("second", 0)))
+        
+        # Find substitution events
+        substitutions = []
+        for event in events_list:
+            if event.get("type", {}).get("name") == "Substitution":
+                sub_data = event.get("substitution", {})
+                substitutions.append({
+                    "minute": event.get("minute", 0),
+                    "team": event.get("team", {}).get("name", ""),
+                    "player_off": event.get("player", {}).get("name", ""),
+                    "player_off_id": event.get("player", {}).get("id"),
+                    "player_on": sub_data.get("replacement", {}).get("name", ""),
+                    "player_on_id": sub_data.get("replacement", {}).get("id"),
+                })
+        
+        # Analyze impact: compare 10 minutes before and after each substitution
+        sub_impacts = []
+        for sub in substitutions:
+            sub_minute = sub["minute"]
+            player_on_id = sub["player_on_id"]
+            player_off_id = sub["player_off_id"]
+            team = sub["team"]
+            
+            # Team stats before sub (10 mins)
+            before = {"passes": 0, "shots": 0, "xT": 0.0}
+            after = {"passes": 0, "shots": 0, "xT": 0.0}
+            
+            # Player on stats after sub
+            player_on_stats = {"passes": 0, "shots": 0, "goals": 0, "xT": 0.0}
+            
+            for event in events_list:
+                evt_team = event.get("team", {}).get("name")
+                minute = event.get("minute", 0)
+                etype = event.get("type", {}).get("name", "")
+                pid = event.get("player", {}).get("id")
+                loc = event.get("location")
+                
+                # Before substitution (same team)
+                if evt_team == team and sub_minute - 10 <= minute < sub_minute:
+                    if etype == "Pass":
+                        before["passes"] += 1
+                        if loc:
+                            end_loc = event.get("pass", {}).get("end_location")
+                            if end_loc:
+                                before["xT"] += calculate_xt_delta(loc, end_loc)
+                    elif etype == "Shot":
+                        before["shots"] += 1
+                
+                # After substitution (same team)
+                if evt_team == team and sub_minute <= minute < sub_minute + 10:
+                    if etype == "Pass":
+                        after["passes"] += 1
+                        if loc:
+                            end_loc = event.get("pass", {}).get("end_location")
+                            if end_loc:
+                                after["xT"] += calculate_xt_delta(loc, end_loc)
+                    elif etype == "Shot":
+                        after["shots"] += 1
+                
+                # Player on specific stats
+                if pid == player_on_id and minute >= sub_minute:
+                    if etype == "Pass":
+                        player_on_stats["passes"] += 1
+                        if loc:
+                            end_loc = event.get("pass", {}).get("end_location")
+                            if end_loc:
+                                player_on_stats["xT"] += calculate_xt_delta(loc, end_loc)
+                    elif etype == "Shot":
+                        player_on_stats["shots"] += 1
+                        if event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                            player_on_stats["goals"] += 1
+            
+            sub_impacts.append({
+                **sub,
+                "team_before_10min": {
+                    "passes": before["passes"],
+                    "shots": before["shots"],
+                    "xT": round(before["xT"], 3),
+                },
+                "team_after_10min": {
+                    "passes": after["passes"],
+                    "shots": after["shots"],
+                    "xT": round(after["xT"], 3),
+                },
+                "player_on_contribution": {
+                    "passes": player_on_stats["passes"],
+                    "shots": player_on_stats["shots"],
+                    "goals": player_on_stats["goals"],
+                    "xT": round(player_on_stats["xT"], 3),
+                },
+                "impact_delta": {
+                    "passes": after["passes"] - before["passes"],
+                    "shots": after["shots"] - before["shots"],
+                    "xT": round(after["xT"] - before["xT"], 3),
+                },
+            })
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "substitutions": sub_impacts,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/set-pieces")
+async def get_set_piece_analysis(match_id: int = None):
+    """Analyze set piece effectiveness: corners, free kicks, throw-ins, penalties."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else []
+        
+        events_list = sorted(events.values(), key=lambda e: (e.get("period", 1), e.get("minute", 0), e.get("second", 0)))
+        
+        # Categorize by play pattern
+        set_piece_stats = {team: {
+            "corners": {"total": 0, "shots": 0, "goals": 0},
+            "free_kicks": {"total": 0, "shots": 0, "goals": 0, "direct_shots": 0},
+            "throw_ins": {"total": 0, "retained": 0},
+            "penalties": {"taken": 0, "scored": 0},
+        } for team in teams}
+        
+        # Track possession sequences
+        current_play_pattern = None
+        current_possession_team = None
+        
+        for event in events_list:
+            team = event.get("team", {}).get("name")
+            etype = event.get("type", {}).get("name", "")
+            play_pattern = event.get("play_pattern", {}).get("name", "Regular Play")
+            
+            if team not in set_piece_stats:
+                continue
+            
+            # Count set piece initiations
+            if play_pattern == "From Corner" and etype == "Pass":
+                if current_play_pattern != "From Corner" or current_possession_team != team:
+                    set_piece_stats[team]["corners"]["total"] += 1
+            elif play_pattern == "From Free Kick" and etype in ["Pass", "Shot"]:
+                if current_play_pattern != "From Free Kick" or current_possession_team != team:
+                    set_piece_stats[team]["free_kicks"]["total"] += 1
+                    if etype == "Shot":
+                        set_piece_stats[team]["free_kicks"]["direct_shots"] += 1
+            elif play_pattern == "From Throw In" and etype == "Pass":
+                if current_play_pattern != "From Throw In" or current_possession_team != team:
+                    set_piece_stats[team]["throw_ins"]["total"] += 1
+            
+            # Count outcomes during set pieces
+            if play_pattern == "From Corner":
+                if etype == "Shot":
+                    set_piece_stats[team]["corners"]["shots"] += 1
+                    if event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                        set_piece_stats[team]["corners"]["goals"] += 1
+            elif play_pattern == "From Free Kick":
+                if etype == "Shot":
+                    set_piece_stats[team]["free_kicks"]["shots"] += 1
+                    if event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                        set_piece_stats[team]["free_kicks"]["goals"] += 1
+            
+            # Penalties
+            if play_pattern == "From Penalty" and etype == "Shot":
+                set_piece_stats[team]["penalties"]["taken"] += 1
+                if event.get("shot", {}).get("outcome", {}).get("name") == "Goal":
+                    set_piece_stats[team]["penalties"]["scored"] += 1
+            
+            current_play_pattern = play_pattern
+            current_possession_team = team
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "teams": teams,
+            "set_pieces": set_piece_stats,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/passing-network")
+async def get_passing_network(match_id: int = None, team: str = None, min_passes: int = 2):
+    """Get passing network showing connections between players."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else []
+        
+        if not team and teams:
+            team = teams[0]
+        
+        events_list = list(events.values())
+        
+        # Build passing connections
+        pass_connections = {}  # (from_id, to_id) -> count
+        player_pass_counts = {}  # player_id -> {passes, received, x_sum, y_sum}
+        player_names = {}  # player_id -> name
+        
+        for event in events_list:
+            if event.get("type", {}).get("name") != "Pass":
+                continue
+            if event.get("team", {}).get("name") != team:
+                continue
+            
+            passer_id = event.get("player", {}).get("id")
+            passer_name = event.get("player", {}).get("name", "Unknown")
+            recipient_id = event.get("pass", {}).get("recipient", {}).get("id")
+            loc = event.get("location")
+            
+            if not passer_id or not recipient_id:
+                continue
+            
+            player_names[passer_id] = passer_name
+            recipient_name = event.get("pass", {}).get("recipient", {}).get("name", "Unknown")
+            player_names[recipient_id] = recipient_name
+            
+            # Count connection
+            key = (passer_id, recipient_id)
+            pass_connections[key] = pass_connections.get(key, 0) + 1
+            
+            # Track positions and counts
+            if passer_id not in player_pass_counts:
+                player_pass_counts[passer_id] = {"passes": 0, "received": 0, "x_sum": 0, "y_sum": 0, "count": 0}
+            player_pass_counts[passer_id]["passes"] += 1
+            if loc:
+                player_pass_counts[passer_id]["x_sum"] += loc[0]
+                player_pass_counts[passer_id]["y_sum"] += loc[1]
+                player_pass_counts[passer_id]["count"] += 1
+            
+            if recipient_id not in player_pass_counts:
+                player_pass_counts[recipient_id] = {"passes": 0, "received": 0, "x_sum": 0, "y_sum": 0, "count": 0}
+            player_pass_counts[recipient_id]["received"] += 1
+        
+        # Build nodes (players)
+        nodes = []
+        for pid, stats in player_pass_counts.items():
+            avg_x = stats["x_sum"] / stats["count"] if stats["count"] > 0 else 60
+            avg_y = stats["y_sum"] / stats["count"] if stats["count"] > 0 else 40
+            name = player_names.get(pid, "Unknown")
+            short_name = name.split()[-1] if " " in name else name
+            nodes.append({
+                "id": pid,
+                "name": name,
+                "short_name": short_name,
+                "passes": stats["passes"],
+                "received": stats["received"],
+                "avg_x": round(avg_x, 1),
+                "avg_y": round(avg_y, 1),
+            })
+        
+        # Build edges (connections with min_passes threshold)
+        edges = []
+        max_passes = max(pass_connections.values()) if pass_connections else 1
+        for (from_id, to_id), count in pass_connections.items():
+            if count >= min_passes:
+                edges.append({
+                    "from": from_id,
+                    "to": to_id,
+                    "passes": count,
+                    "weight": round(count / max_passes, 2),  # Normalized weight
+                })
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "team": team,
+            "teams": teams,
+            "nodes": nodes,
+            "edges": edges,
+            "total_passes": sum(n["passes"] for n in nodes) // 2,  # Divide by 2 to avoid double count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/pressing")
+async def get_pressing_analysis(match_id: int = None):
+    """Analyze pressing intensity and effectiveness by team."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        teams = list(lineups.keys()) if lineups else []
+        
+        events_list = sorted(events.values(), key=lambda e: (e.get("period", 1), e.get("minute", 0), e.get("second", 0)))
+        
+        pressing_stats = {team: {
+            "total_pressures": 0,
+            "successful_pressures": 0,  # Followed by turnover
+            "high_pressures": 0,  # In opponent's third (x > 80 for team attacking right)
+            "mid_pressures": 0,
+            "low_pressures": 0,
+            "pressure_locations": [],  # For visualization
+            "pressure_by_interval": {},  # 15-min intervals
+        } for team in teams}
+        
+        # Track pressure events and their outcomes
+        for i, event in enumerate(events_list):
+            if event.get("type", {}).get("name") != "Pressure":
+                continue
+            
+            team = event.get("team", {}).get("name")
+            if team not in pressing_stats:
+                continue
+            
+            loc = event.get("location")
+            minute = event.get("minute", 0)
+            
+            pressing_stats[team]["total_pressures"] += 1
+            
+            if loc:
+                pressing_stats[team]["pressure_locations"].append({
+                    "x": round(loc[0], 1),
+                    "y": round(loc[1], 1),
+                    "minute": minute,
+                })
+                
+                # Categorize by zone (assuming team attacks toward x=120)
+                if loc[0] > 80:
+                    pressing_stats[team]["high_pressures"] += 1
+                elif loc[0] > 40:
+                    pressing_stats[team]["mid_pressures"] += 1
+                else:
+                    pressing_stats[team]["low_pressures"] += 1
+            
+            # Check if pressure was successful (next event is turnover for pressing team)
+            if i + 1 < len(events_list):
+                next_event = events_list[i + 1]
+                next_team = next_event.get("team", {}).get("name")
+                next_type = next_event.get("type", {}).get("name", "")
+                if next_team == team and next_type in ["Ball Recovery", "Interception"]:
+                    pressing_stats[team]["successful_pressures"] += 1
+            
+            # Track by interval
+            interval = (minute // 15) * 15
+            interval_key = f"{interval}-{interval + 15}"
+            if interval_key not in pressing_stats[team]["pressure_by_interval"]:
+                pressing_stats[team]["pressure_by_interval"][interval_key] = 0
+            pressing_stats[team]["pressure_by_interval"][interval_key] += 1
+        
+        # Calculate success rates
+        result = {}
+        for team, stats in pressing_stats.items():
+            success_rate = round(stats["successful_pressures"] / stats["total_pressures"] * 100) if stats["total_pressures"] > 0 else 0
+            result[team] = {
+                "total_pressures": stats["total_pressures"],
+                "successful_pressures": stats["successful_pressures"],
+                "success_rate": f"{success_rate}%",
+                "high_pressures": stats["high_pressures"],
+                "mid_pressures": stats["mid_pressures"],
+                "low_pressures": stats["low_pressures"],
+                "pressure_locations": stats["pressure_locations"][:100],  # Limit for performance
+                "pressure_by_interval": stats["pressure_by_interval"],
+            }
+        
+        return {
+            "match_id": config["match_id"],
+            "match_title": config["label"],
+            "teams": teams,
+            "pressing": result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- EXECUTION ---
 if __name__ == "__main__":
     # Load match data

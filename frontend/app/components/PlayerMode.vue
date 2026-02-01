@@ -2,6 +2,8 @@
 import { cn } from "~/utils/cn";
 import { computed, ref, onMounted, watch } from "vue";
 import PitchMap from "~/components/PitchMap.vue";
+import AdvancedAnalytics from "~/components/AdvancedAnalytics.vue";
+import PlayerComparison from "~/components/PlayerComparison.vue";
 
 const emit = defineEmits<{
   navigate: [screen: "landing" | "coach" | "player"];
@@ -1788,6 +1790,50 @@ onMounted(() => {
           <div v-else class="text-sm text-center py-4" :class="isDarkMode ? 'text-white/50' : 'text-gray-500'">
             Select a match to see the full summary.
           </div>
+        </UiCard>
+
+        <!-- Advanced Analytics -->
+        <UiCard
+          :class="
+            cn(
+              'p-6',
+              isDarkMode
+                ? 'bg-[#12141f] border-purple-500/30'
+                : 'bg-white border-purple-300'
+            )
+          "
+        >
+          <div class="flex items-center gap-2 mb-4">
+            <Icon name="lucide:bar-chart-3" class="w-5 h-5 text-purple-400" />
+            <h3 class="font-semibold">Advanced Match Analytics</h3>
+          </div>
+          <AdvancedAnalytics
+            :matchId="selectedMatchId"
+            :teams="teams"
+            :isDarkMode="isDarkMode"
+          />
+        </UiCard>
+
+        <!-- Player Comparison -->
+        <UiCard
+          :class="
+            cn(
+              'p-6',
+              isDarkMode
+                ? 'bg-[#12141f] border-orange-500/30'
+                : 'bg-white border-orange-300'
+            )
+          "
+        >
+          <div class="flex items-center gap-2 mb-4">
+            <Icon name="lucide:users" class="w-5 h-5 text-orange-400" />
+            <h3 class="font-semibold">Player Comparison</h3>
+          </div>
+          <PlayerComparison
+            :matchId="selectedMatchId"
+            :players="players"
+            :isDarkMode="isDarkMode"
+          />
         </UiCard>
 
         <!-- Security Badge -->
