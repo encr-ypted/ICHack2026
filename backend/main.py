@@ -32,9 +32,9 @@ def load_models():
     """Load ML models from disk. Returns dict of models or None if not found."""
     models = {}
     model_files = {
-        "pass": "coachos_pass_model.joblib",
-        "shot": "coachos_shot_model.joblib",
-        "win": "coachos_win_model.joblib"
+        "pass": "pass_model.joblib",
+        "shot": "shot_model.joblib",
+        "win": "win_model.joblib"
     }
     
     for model_type, filename in model_files.items():
@@ -271,10 +271,17 @@ def calculate_win_prob_delta(
     return prob_after - prob_before
 
 
-# --- HIGHLIGHT SCORING ENGINE ---
+# --- HIGHLIGHT/LOWLIGHT SCORING ENGINE ---
+# Thresholds for categorizing moments
+HIGHLIGHT_THRESHOLD = 0.1   # Minimum score for a positive highlight
+LOWLIGHT_THRESHOLD = -0.1   # Maximum score for a negative lowlight (area for improvement)
+
 def calculate_highlight_score(event: dict, game_state: dict) -> tuple[float, str, float, float]:
     """
     Calculate ML-driven highlight score for an event.
+    
+    Positive scores indicate good performance (highlights).
+    Negative scores indicate areas for improvement (lowlights).
     
     Returns:
         tuple: (highlight_score, description, xT_delta, value_added)
@@ -298,9 +305,14 @@ def calculate_highlight_score(event: dict, game_state: dict) -> tuple[float, str
         value_added, description, win_prob_delta = _score_shot(event, game_state)
         
     elif event_type == "Dribble":
-        if event.get("dribble", {}).get("outcome", {}).get("name") == "Complete":
+        dribble_outcome = event.get("dribble", {}).get("outcome", {}).get("name", "")
+        if dribble_outcome == "Complete":
             value_added = 0.3
             description = "Successful Dribble"
+        elif dribble_outcome == "Incomplete":
+            # Failed dribble - negative impact (lost possession)
+            value_added = -0.25
+            description = "Failed Dribble (Dispossessed)"
             
     elif event_type == "Interception":
         value_added = 0.25
@@ -309,8 +321,35 @@ def calculate_highlight_score(event: dict, game_state: dict) -> tuple[float, str
     elif event_type == "Ball Recovery":
         value_added = 0.15
         description = "Ball Recovery"
+        
+    elif event_type == "Dispossessed":
+        # Lost the ball under pressure
+        value_added = -0.2
+        description = "Dispossessed"
+        
+    elif event_type == "Miscontrol":
+        # Failed to control the ball
+        value_added = -0.15
+        description = "Miscontrol"
+        
+    elif event_type == "Foul Committed":
+        # Committed a foul
+        card = event.get("foul_committed", {}).get("card", {}).get("name", "")
+        if card == "Red Card":
+            value_added = -1.0
+            description = "RED CARD - Sent Off"
+        elif card == "Second Yellow":
+            value_added = -0.8
+            description = "Second Yellow - Sent Off"
+        elif card == "Yellow Card":
+            value_added = -0.3
+            description = "Yellow Card"
+        else:
+            value_added = -0.1
+            description = "Foul Committed"
     
     # Final Highlight Score: (Value Added + xT) * Clutch Factor
+    # Clutch factor amplifies both positive AND negative scores in crucial moments
     clutch_factor = 1.0 + abs(win_prob_delta)
     highlight_score = (value_added + xt_delta) * clutch_factor
     
@@ -318,10 +357,19 @@ def calculate_highlight_score(event: dict, game_state: dict) -> tuple[float, str
 
 
 def _score_pass(event: dict, xt_delta: float) -> tuple[float, str]:
-    """Score a pass event using ML model."""
+    """
+    Score a pass event using ML model.
+    
+    Positive scoring: Difficult passes completed (low P_success, but succeeded)
+    Negative scoring: Easy passes failed (high P_success, but failed)
+    
+    Thresholds:
+        - P_success > 0.8: "Easy" pass - failure is penalized
+        - P_success < 0.5: "Difficult" pass - success is rewarded
+    """
     pass_data = event.get("pass", {})
     
-    # Check for special pass types first
+    # Check for special pass types first (always positive)
     if pass_data.get("goal_assist"):
         return 1.0, "Goal Assist"
     if pass_data.get("shot_assist"):
@@ -333,30 +381,63 @@ def _score_pass(event: dict, xt_delta: float) -> tuple[float, str]:
     # In StatsBomb, missing 'outcome' means pass was successful
     pass_completed = "outcome" not in pass_data
     
-    if p_success is not None and pass_completed:
-        # Value Added = difficulty overcome (1 - P_success)
-        value_added = 1.0 - p_success
-        
-        if value_added > 0.7:
-            description = "Exceptional Pass (High Difficulty)"
-        elif value_added > 0.5:
-            description = "Impressive Pass"
-        elif xt_delta > 0.05:
-            description = "Line-Breaking Pass"
+    if p_success is not None:
+        if pass_completed:
+            # POSITIVE: Value Added = difficulty overcome (1 - P_success)
+            value_added = 1.0 - p_success
+            
+            if value_added > 0.7:
+                description = "Exceptional Pass (High Difficulty)"
+            elif value_added > 0.5:
+                description = "Impressive Pass"
+            elif xt_delta > 0.05:
+                description = "Line-Breaking Pass"
+            else:
+                description = "Completed Pass"
+            
+            return value_added, description
         else:
-            description = "Completed Pass"
-        
-        return value_added, description
+            # NEGATIVE: Failed pass - penalize based on how easy it should have been
+            # Higher P_success = easier pass = more negative impact when failed
+            if p_success > 0.8:
+                # Easy pass missed - significant negative impact
+                value_added = -(p_success - 0.5)  # Range: -0.3 to -0.5
+                description = "Easy Pass Missed (Turnover)"
+            elif p_success > 0.6:
+                # Moderate difficulty pass missed
+                value_added = -(p_success - 0.4)  # Range: -0.2 to -0.4
+                description = "Pass Failed (Turnover)"
+            else:
+                # Difficult pass missed - less penalty
+                value_added = -0.1
+                description = "Ambitious Pass Failed"
+            
+            return value_added, description
     
-    # Fallback: use xT-based scoring
-    if xt_delta > 0.05:
-        return 0.3, "Progressive Pass"
-    
-    return 0.0, "Regular Pass"
+    # Fallback: use xT-based scoring (no ML model available)
+    if pass_completed:
+        if xt_delta > 0.05:
+            return 0.3, "Progressive Pass"
+        return 0.0, "Regular Pass"
+    else:
+        # Failed pass without ML - use xT loss
+        if xt_delta < -0.05:
+            return -0.3, "Pass Failed (Lost Territory)"
+        return -0.1, "Pass Failed"
 
 
 def _score_shot(event: dict, game_state: dict) -> tuple[float, str, float]:
-    """Score a shot event using ML model."""
+    """
+    Score a shot event using ML model.
+    
+    Positive scoring: Goals from difficult positions (low xG converted)
+    Negative scoring: Big chances missed (high xG not converted)
+    
+    Thresholds:
+        - xG > 0.4: "Big Chance" - missing is heavily penalized
+        - xG > 0.25: "Good Chance" - missing is moderately penalized
+        - xG < 0.1: "Difficult Shot" - scoring is heavily rewarded
+    """
     shot_data = event.get("shot", {})
     outcome = shot_data.get("outcome", {}).get("name", "")
     
@@ -370,7 +451,7 @@ def _score_shot(event: dict, game_state: dict) -> tuple[float, str, float]:
     win_prob_delta = 0.0
     
     if outcome == "Goal":
-        # Value Added = beating the odds (1 - xG)
+        # POSITIVE: Value Added = beating the odds (1 - xG)
         value_added = 1.0 - xg
         description = "GOAL SCORED"
         
@@ -385,18 +466,53 @@ def _score_shot(event: dict, game_state: dict) -> tuple[float, str, float]:
         )
         
         return value_added, description, win_prob_delta
+    
+    # Not a goal - evaluate based on chance quality
+    if xg > 0.4:
+        # BIG CHANCE MISSED - significant negative impact
+        # The higher the xG, the more negative (should have scored)
+        value_added = -(xg - 0.1)  # Range: -0.3 to -0.9 for high xG
         
-    elif outcome == "Saved":
-        value_added = xg * 0.5  # Credit for testing the keeper
-        description = "Shot on Target"
+        if outcome == "Saved":
+            description = "Big Chance Missed (Saved)"
+            value_added *= 0.7  # Less penalty - at least on target
+        elif outcome == "Post":
+            description = "Big Chance Missed (Hit Post)"
+            value_added *= 0.8  # Slightly less penalty
+        elif outcome in ["Off T", "Wayward"]:
+            description = "Big Chance Missed (Off Target)"
+        elif outcome == "Blocked":
+            description = "Big Chance Blocked"
+            value_added *= 0.6  # Less penalty - defender intervened
+        else:
+            description = "Big Chance Missed"
+            
+    elif xg > 0.25:
+        # GOOD CHANCE MISSED - moderate negative impact
+        value_added = -(xg - 0.15)  # Range: -0.1 to -0.25
         
-    elif outcome in ["Blocked", "Off T", "Wayward", "Post"]:
-        value_added = xg * 0.2
-        description = f"Shot ({outcome})"
-        
+        if outcome == "Saved":
+            description = "Chance Missed (Saved)"
+            value_added *= 0.5  # On target gets credit
+        elif outcome in ["Off T", "Wayward"]:
+            description = "Chance Missed (Off Target)"
+        else:
+            description = f"Chance Missed ({outcome})"
+            
     else:
-        value_added = xg * 0.1
-        description = "Shot Attempt"
+        # LOW xG SHOT - minor positive/neutral (taking the shot is fine)
+        if outcome == "Saved":
+            value_added = xg * 0.5  # Credit for testing keeper
+            description = "Shot on Target"
+        elif outcome == "Post":
+            value_added = xg * 0.4
+            description = "Shot Hit Post"
+        elif outcome in ["Blocked"]:
+            value_added = xg * 0.2
+            description = "Shot Blocked"
+        else:
+            value_added = 0.0  # Neutral - difficult shot missed
+            description = f"Shot Off Target"
     
     return value_added, description, win_prob_delta
 
@@ -477,18 +593,18 @@ def get_player_data(
     player_name: str,
     home_team: str = "Argentina",
     top_n: int = 5
-) -> tuple[dict, list]:
+) -> tuple[dict, list, list]:
     """
-    Analyze player events and return stats with top ML-scored highlights.
+    Analyze player events and return stats with top highlights AND areas for improvement.
     
     Args:
         match_events: Dictionary of match events from StatsBomb
         player_name: Name of player to analyze
         home_team: Home team name for win probability calculations
-        top_n: Number of top moments to return
+        top_n: Number of top moments to return for each category
     
     Returns:
-        tuple: (player_stats, top_moments)
+        tuple: (player_stats, top_highlights, areas_for_improvement)
     """
     # Flatten events dict to list and sort by timestamp
     events_list = list(match_events.values())
@@ -504,15 +620,17 @@ def get_player_data(
     ]
     
     if not player_events:
-        return {"error": f"Player '{player_name}' not found"}, []
+        return {"error": f"Player '{player_name}' not found"}, [], []
     
     print(f"Analyzing {len(player_events)} events for {player_name}...")
     
     # Process all events to track game state
     player_event_ids = {e.get("id") for e in player_events}
-    processed_moments = []
+    all_moments = []
     total_highlight_score = 0.0
     total_value_added = 0.0
+    positive_contributions = 0
+    negative_contributions = 0
     
     for event in events_list:
         # Update game state for all events
@@ -530,45 +648,71 @@ def get_player_data(
         total_highlight_score += highlight_score
         total_value_added += value_added
         
-        # Filter for interesting moments (positive highlight score)
-        if highlight_score > 0.05:
-            processed_moments.append({
-                "time_display": f"{event['minute']}:{event['second']:02d}",
-                "event_type": event["type"]["name"],
-                "description": description,
-                "highlight_score": round(highlight_score, 3),
-                "value_added": round(value_added, 3),
-                "xt_delta": round(xt_delta, 4),
-                "video_url": get_pitch_pilot_url(
-                    event["minute"], 
-                    event["second"], 
-                    event["period"]
-                ),
-                "period": event["period"],
-                "minute": event["minute"]
-            })
+        # Track positive vs negative contributions
+        if highlight_score > 0:
+            positive_contributions += 1
+        elif highlight_score < 0:
+            negative_contributions += 1
+        
+        # Store moment if it meets either threshold (highlight or lowlight)
+        moment_data = {
+            "time_display": f"{event['minute']}:{event['second']:02d}",
+            "event_type": event["type"]["name"],
+            "description": description,
+            "highlight_score": round(highlight_score, 3),
+            "value_added": round(value_added, 3),
+            "xt_delta": round(xt_delta, 4),
+            "video_url": get_pitch_pilot_url(
+                event["minute"], 
+                event["second"], 
+                event["period"]
+            ),
+            "period": event["period"],
+            "minute": event["minute"]
+        }
+        
+        # Include if above highlight threshold OR below lowlight threshold
+        if highlight_score > HIGHLIGHT_THRESHOLD or highlight_score < LOWLIGHT_THRESHOLD:
+            all_moments.append(moment_data)
     
-    # Sort by Highlight Score (highest first) and take top N
-    top_moments = sorted(
-        processed_moments, 
+    # Separate into highlights (positive) and lowlights (negative)
+    highlights = [m for m in all_moments if m["highlight_score"] > HIGHLIGHT_THRESHOLD]
+    lowlights = [m for m in all_moments if m["highlight_score"] < LOWLIGHT_THRESHOLD]
+    
+    # Sort highlights: highest positive first
+    top_highlights = sorted(
+        highlights, 
         key=lambda x: x["highlight_score"], 
         reverse=True
+    )[:top_n]
+    
+    # Sort lowlights: most negative first (worst mistakes)
+    areas_for_improvement = sorted(
+        lowlights, 
+        key=lambda x: x["highlight_score"]  # Ascending - most negative first
     )[:top_n]
     
     # Calculate player statistics
     pass_events = [e for e in player_events if e["type"]["name"] == "Pass"]
     complete_passes = [p for p in pass_events if "outcome" not in p.get("pass", {})]
+    shot_events = [e for e in player_events if e["type"]["name"] == "Shot"]
+    goals = [s for s in shot_events if s.get("shot", {}).get("outcome", {}).get("name") == "Goal"]
     
     stats = {
         "name": player_name,
         "total_highlight_score": round(total_highlight_score, 2),
         "total_value_added": round(total_value_added, 2),
         "total_actions": len(player_events),
-        "moments_analyzed": len(processed_moments),
+        "positive_contributions": positive_contributions,
+        "negative_contributions": negative_contributions,
+        "highlights_count": len(highlights),
+        "lowlights_count": len(lowlights),
         "pass_accuracy": (
             f"{int(len(complete_passes) / len(pass_events) * 100)}%" 
             if pass_events else "N/A"
         ),
+        "shots": len(shot_events),
+        "goals": len(goals),
         "ml_models_active": {
             "pass_model": ML_MODELS.get("pass") is not None,
             "shot_model": ML_MODELS.get("shot") is not None,
@@ -576,7 +720,7 @@ def get_player_data(
         }
     }
     
-    return stats, top_moments
+    return stats, top_highlights, areas_for_improvement
 
 
 def get_match_highlights(
@@ -605,7 +749,7 @@ def get_match_highlights(
             event, game_state.get_state()
         )
         
-        if highlight_score > 0.1:
+        if highlight_score > HIGHLIGHT_THRESHOLD:
             all_moments.append({
                 "player": player_name,
                 "team": event.get("team", {}).get("name", ""),
@@ -623,30 +767,242 @@ def get_match_highlights(
     return sorted(all_moments, key=lambda x: x["highlight_score"], reverse=True)[:top_n]
 
 
+# --- CLAUDE PROMPT GENERATION ---
+def generate_claude_prompt(
+    player_name: str,
+    stats: dict,
+    top_highlights: list,
+    areas_for_improvement: list
+) -> str:
+    """
+    Generate a structured prompt for Claude to provide player feedback.
+    
+    The prompt requests:
+    1. A positive observation from the best highlight
+    2. Constructive criticism based on the worst lowlight
+    3. A specific training drill to address the lowlight
+    4. An encouraging closing statement
+    
+    Args:
+        player_name: Name of the player
+        stats: Player statistics dictionary
+        top_highlights: List of top positive moments
+        areas_for_improvement: List of negative moments (lowlights)
+    
+    Returns:
+        Formatted prompt string for Claude
+    """
+    # Build highlight section
+    if top_highlights:
+        best_highlight = top_highlights[0]
+        highlight_section = f"""
+## Best Highlight:
+- **Time:** {best_highlight['time_display']}
+- **Event:** {best_highlight['description']}
+- **Impact Score:** {best_highlight['highlight_score']:.3f}
+- **Value Added:** {best_highlight['value_added']:.3f}
+- **Video:** {best_highlight['video_url']}
+"""
+    else:
+        highlight_section = """
+## Best Highlight:
+No significant highlights recorded in this match.
+"""
+    
+    # Build lowlight section
+    if areas_for_improvement:
+        worst_lowlight = areas_for_improvement[0]
+        lowlight_section = f"""
+## Key Area for Improvement:
+- **Time:** {worst_lowlight['time_display']}
+- **Event:** {worst_lowlight['description']}
+- **Impact Score:** {worst_lowlight['highlight_score']:.3f}
+- **Value Lost:** {abs(worst_lowlight['value_added']):.3f}
+- **Video:** {worst_lowlight['video_url']}
+"""
+    else:
+        lowlight_section = """
+## Key Area for Improvement:
+No significant areas for improvement identified - excellent performance!
+"""
+    
+    # Build the full prompt
+    prompt = f"""You are an elite football performance analyst providing personalized feedback to a player after analyzing their match performance using advanced ML models.
+
+# Player Analysis: {player_name}
+
+## Match Statistics:
+- **Total Actions:** {stats.get('total_actions', 0)}
+- **Positive Contributions:** {stats.get('positive_contributions', 0)}
+- **Negative Contributions:** {stats.get('negative_contributions', 0)}
+- **Pass Accuracy:** {stats.get('pass_accuracy', 'N/A')}
+- **Shots:** {stats.get('shots', 0)}
+- **Goals:** {stats.get('goals', 0)}
+- **Net Impact Score:** {stats.get('total_highlight_score', 0):.2f}
+{highlight_section}
+{lowlight_section}
+
+---
+
+Please provide feedback in the following structure:
+
+### 1. Positive Observation
+Analyze the best highlight moment. Explain what made this action technically impressive and tactically smart. Be specific about body positioning, decision-making speed, or execution quality.
+
+### 2. Constructive Criticism
+Analyze the area for improvement. Explain the technical or tactical reason this moment had negative impact. Consider:
+- Was it a positioning issue?
+- Was it decision-making under pressure?
+- Was it technical execution (first touch, weight of pass, shot technique)?
+- Was it awareness of surrounding players?
+
+Be honest but supportive - frame it as a growth opportunity.
+
+### 3. Training Drill Recommendation
+Recommend ONE specific training drill that would directly address the weakness identified. Include:
+- **Drill Name:** A clear, descriptive name
+- **Setup:** How to set up the drill
+- **Execution:** Step-by-step instructions
+- **Focus Points:** What to concentrate on during the drill
+- **Progression:** How to increase difficulty over time
+
+### 4. Closing Encouragement
+Provide an encouraging closing statement that:
+- Acknowledges the player's strengths
+- Frames the improvement area as achievable
+- Motivates continued development
+
+Keep the tone professional, supportive, and actionable. Use football terminology appropriately.
+"""
+    
+    return prompt
+
+
+def generate_coach_summary(
+    player_name: str,
+    stats: dict,
+    top_highlights: list,
+    areas_for_improvement: list
+) -> dict:
+    """
+    Generate a structured summary for coach dashboard display.
+    
+    Returns a dictionary ready for JSON serialization.
+    """
+    return {
+        "player_name": player_name,
+        "summary": {
+            "total_actions": stats.get("total_actions", 0),
+            "net_impact": stats.get("total_highlight_score", 0),
+            "positive_ratio": (
+                stats.get("positive_contributions", 0) / 
+                max(stats.get("total_actions", 1), 1)
+            ),
+            "pass_accuracy": stats.get("pass_accuracy", "N/A"),
+            "goals": stats.get("goals", 0),
+            "shots": stats.get("shots", 0)
+        },
+        "top_highlights": [
+            {
+                "time": h["time_display"],
+                "description": h["description"],
+                "score": h["highlight_score"],
+                "video_url": h["video_url"]
+            }
+            for h in top_highlights
+        ],
+        "areas_for_improvement": [
+            {
+                "time": l["time_display"],
+                "description": l["description"],
+                "score": l["highlight_score"],
+                "video_url": l["video_url"]
+            }
+            for l in areas_for_improvement
+        ],
+        "claude_prompt": generate_claude_prompt(
+            player_name, stats, top_highlights, areas_for_improvement
+        )
+    }
+
+
 # --- EXECUTION ---
 if __name__ == "__main__":
     # Load match data
     wc_final_events, _ = load_match_data()
     
     # Analyze individual player
-    print("=" * 60)
+    print("=" * 70)
     print("PLAYER ANALYSIS: Lionel Messi")
-    print("=" * 60)
+    print("=" * 70)
     
-    stats, moments = get_player_data(wc_final_events, "Lionel Andrés Messi Cuccittini")
+    stats, highlights, lowlights = get_player_data(
+        wc_final_events, 
+        "Lionel Andrés Messi Cuccittini"
+    )
     
-    print(f"\nPlayer Stats: {stats}")
-    print(f"\nTop {len(moments)} Highlights:")
-    for i, m in enumerate(moments, 1):
-        print(f"  {i}. [{m['time_display']}] {m['description']}")
-        print(f"     Score: {m['highlight_score']:.3f} | Value Added: {m['value_added']:.3f} | xT: {m['xt_delta']:.4f}")
-        print(f"     Watch: {m['video_url']}")
+    print(f"\n[STATS] PLAYER STATISTICS:")
+    print(f"   Name: {stats['name']}")
+    print(f"   Total Actions: {stats['total_actions']}")
+    print(f"   Positive Contributions: {stats['positive_contributions']}")
+    print(f"   Negative Contributions: {stats['negative_contributions']}")
+    print(f"   Pass Accuracy: {stats['pass_accuracy']}")
+    print(f"   Shots: {stats['shots']} | Goals: {stats['goals']}")
+    print(f"   Net Impact Score: {stats['total_highlight_score']:.2f}")
+    print(f"   ML Models Active: {stats['ml_models_active']}")
+    
+    print(f"\n[+] TOP {len(highlights)} HIGHLIGHTS:")
+    if highlights:
+        for i, m in enumerate(highlights, 1):
+            print(f"   {i}. [{m['time_display']}] {m['description']}")
+            print(f"      Score: +{m['highlight_score']:.3f} | Value: +{m['value_added']:.3f} | xT: {m['xt_delta']:+.4f}")
+            print(f"      Watch: {m['video_url']}")
+    else:
+        print("   No significant highlights recorded.")
+    
+    print(f"\n[-] TOP {len(lowlights)} AREAS FOR IMPROVEMENT:")
+    if lowlights:
+        for i, m in enumerate(lowlights, 1):
+            print(f"   {i}. [{m['time_display']}] {m['description']}")
+            print(f"      Score: {m['highlight_score']:.3f} | Value: {m['value_added']:.3f} | xT: {m['xt_delta']:+.4f}")
+            print(f"      Watch: {m['video_url']}")
+    else:
+        print("   No significant areas for improvement - excellent performance!")
+    
+    # Generate Claude prompt
+    print("\n" + "=" * 70)
+    print("CLAUDE PROMPT (For AI Feedback Generation)")
+    print("=" * 70)
+    claude_prompt = generate_claude_prompt(stats['name'], stats, highlights, lowlights)
+    print(claude_prompt[:1500] + "..." if len(claude_prompt) > 1500 else claude_prompt)
     
     # Get match-wide highlights
-    print("\n" + "=" * 60)
-    print("MATCH HIGHLIGHTS")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("MATCH-WIDE TOP HIGHLIGHTS")
+    print("=" * 70)
     
     match_highlights = get_match_highlights(wc_final_events)
     for i, m in enumerate(match_highlights, 1):
-        print(f"  {i}. [{m['time_display']}] {m['player']} - {m['description']} (Score: {m['highlight_score']:.3f})")
+        print(f"   {i}. [{m['time_display']}] {m['player']}")
+        print(f"      {m['description']} (Score: {m['highlight_score']:.3f})")
+    
+    # Test with another player who might have more lowlights
+    print("\n" + "=" * 70)
+    print("PLAYER ANALYSIS: Test Player with Potential Lowlights")
+    print("=" * 70)
+    
+    # Try a defender or midfielder who might have turnovers
+    stats2, highlights2, lowlights2 = get_player_data(
+        wc_final_events,
+        "Rodrigo Javier De Paul"  # Midfielder - likely has both highlights and turnovers
+    )
+    
+    if "error" not in stats2:
+        print(f"\n[STATS] {stats2['name']}:")
+        print(f"   Positive: {stats2['positive_contributions']} | Negative: {stats2['negative_contributions']}")
+        print(f"   Highlights: {len(highlights2)} | Lowlights: {len(lowlights2)}")
+        
+        if lowlights2:
+            print(f"\n   Worst moment: [{lowlights2[0]['time_display']}] {lowlights2[0]['description']} ({lowlights2[0]['highlight_score']:.3f})")
+    else:
+        print(f"   {stats2}")
