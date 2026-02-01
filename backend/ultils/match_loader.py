@@ -1,8 +1,15 @@
-from statsbombpy import sb
 import json
 import os
 
-DATA_DIR = "./data"
+# Optional: statsbombpy for fetching new data (not needed if using cached data)
+try:
+    from statsbombpy import sb
+    HAS_STATSBOMB = True
+except ImportError:
+    HAS_STATSBOMB = False
+    print("Note: statsbombpy not installed. Using cached data only.")
+
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 MATCH_ID = 3869151
 
 
@@ -15,7 +22,13 @@ def get_match_events(match_id, match_title):
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 2. If not, fetch it from StatsBomb
+    # 2. If not, fetch it from StatsBomb (requires statsbombpy)
+    if not HAS_STATSBOMB:
+        raise RuntimeError(
+            f"Match data not found at {file_path} and statsbombpy is not installed. "
+            "Install it with: pip install statsbombpy"
+        )
+    
     print(f"Fetching match {match_id} from StatsBomb (this might take a bit)...")
     events = sb.events(match_id=match_id, fmt="dict")
 
@@ -35,8 +48,13 @@ def get_match_lineups(match_id, match_title):
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 2. Fetch from StatsBomb
-    # statsbombpy returns a dict where keys are Team Names
+    # 2. Fetch from StatsBomb (requires statsbombpy)
+    if not HAS_STATSBOMB:
+        raise RuntimeError(
+            f"Lineup data not found at {file_path} and statsbombpy is not installed. "
+            "Install it with: pip install statsbombpy"
+        )
+    
     print(f"Fetching lineups for match {match_id}...")
     lineups = sb.lineups(match_id=match_id)
 
