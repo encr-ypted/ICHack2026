@@ -7,6 +7,53 @@ const emit = defineEmits<{
 
 const { isDarkMode, toggleTheme } = useTheme();
 
+// Video source state
+type VideoSourceType = "none" | "youtube" | "upload";
+const videoSourceType = ref<VideoSourceType>("none");
+const showVideoSourceModal = ref(false);
+const youtubeUrl = ref("");
+const uploadedFileName = ref("");
+const isAnalyzing = ref(false);
+const analysisComplete = ref(false);
+
+const openVideoSourceModal = () => {
+  showVideoSourceModal.value = true;
+};
+
+const selectVideoSource = (type: "youtube" | "upload") => {
+  videoSourceType.value = type;
+};
+
+const handleFileUpload = (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  if (target.files && target.files[0]) {
+    uploadedFileName.value = target.files[0].name;
+  }
+};
+
+const startAnalysis = () => {
+  if (
+    (videoSourceType.value === "youtube" && youtubeUrl.value.trim()) ||
+    (videoSourceType.value === "upload" && uploadedFileName.value)
+  ) {
+    isAnalyzing.value = true;
+    showVideoSourceModal.value = false;
+
+    // Simulate analysis
+    setTimeout(() => {
+      isAnalyzing.value = false;
+      analysisComplete.value = true;
+    }, 3000);
+  }
+};
+
+const resetAnalysis = () => {
+  videoSourceType.value = "none";
+  youtubeUrl.value = "";
+  uploadedFileName.value = "";
+  analysisComplete.value = false;
+};
+
 const criticalMoments = [
   {
     id: 1,
@@ -242,8 +289,92 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
               </select>
             </div>
 
-            <UiButton class="bg-emerald-500 hover:bg-emerald-600 text-white">
-              Generate Report
+            <!-- Video Source Status -->
+            <div
+              v-if="analysisComplete"
+              :class="
+                cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-lg border',
+                  isDarkMode
+                    ? 'bg-emerald-500/10 border-emerald-500/30'
+                    : 'bg-emerald-50 border-emerald-200'
+                )
+              "
+            >
+              <Icon
+                name="lucide:check-circle-2"
+                class="w-4 h-4 text-emerald-400"
+              />
+              <span
+                :class="
+                  cn(
+                    'text-sm',
+                    isDarkMode ? 'text-emerald-300' : 'text-emerald-700'
+                  )
+                "
+              >
+                {{
+                  videoSourceType === "youtube"
+                    ? "YouTube Video"
+                    : uploadedFileName
+                }}
+              </span>
+              <button
+                @click="resetAnalysis"
+                :class="
+                  cn(
+                    'ml-2 p-1 rounded hover:bg-white/10',
+                    isDarkMode ? 'text-white/50' : 'text-gray-400'
+                  )
+                "
+              >
+                <Icon name="lucide:x" class="w-3 h-3" />
+              </button>
+            </div>
+            <div
+              v-else-if="isAnalyzing"
+              :class="
+                cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-lg border',
+                  isDarkMode
+                    ? 'bg-blue-500/10 border-blue-500/30'
+                    : 'bg-blue-50 border-blue-200'
+                )
+              "
+            >
+              <Icon
+                name="lucide:loader-2"
+                class="w-4 h-4 text-blue-400 animate-spin"
+              />
+              <span
+                :class="
+                  cn('text-sm', isDarkMode ? 'text-blue-300' : 'text-blue-700')
+                "
+              >
+                Analyzing video...
+              </span>
+            </div>
+
+            <UiButton
+              v-if="!analysisComplete && !isAnalyzing"
+              class="bg-emerald-500 hover:bg-emerald-600 text-white"
+              @click="openVideoSourceModal"
+            >
+              <Icon name="lucide:video" class="w-4 h-4 mr-2" />
+              Add Video Source
+            </UiButton>
+            <UiButton
+              v-else-if="analysisComplete"
+              variant="outline"
+              :class="
+                isDarkMode
+                  ? 'border-white/20 text-white/70'
+                  : 'border-gray-300 text-gray-600'
+              "
+              @click="openVideoSourceModal"
+            >
+              <Icon name="lucide:refresh-cw" class="w-4 h-4 mr-2" />
+              New Analysis
             </UiButton>
           </div>
         </div>
@@ -264,22 +395,41 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             )
           "
         >
-          <div class="flex items-center gap-2 mb-4">
-            <div
-              class="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center"
-            >
-              <span class="text-xl font-bold">MR</span>
-            </div>
-            <div>
-              <div class="font-semibold">Marcus Rashford</div>
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
               <div
-                :class="
-                  cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
-                "
+                class="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center"
               >
-                Forward · #10
+                <span class="text-xl font-bold">MR</span>
+              </div>
+              <div>
+                <div class="font-semibold">Marcus Rashford</div>
+                <div
+                  :class="
+                    cn(
+                      'text-xs',
+                      isDarkMode ? 'text-white/50' : 'text-gray-500'
+                    )
+                  "
+                >
+                  Forward · #10
+                </div>
               </div>
             </div>
+            <UiBadge
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-purple-500/30 text-purple-400'
+                    : 'border-purple-300 text-purple-600'
+                )
+              "
+            >
+              <Icon name="lucide:flask-conical" class="w-3 h-3 mr-1" />
+              Sample Data
+            </UiBadge>
           </div>
 
           <div
@@ -371,7 +521,22 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             )
           "
         >
-          <h3 class="font-semibold mb-4">Key Metrics</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold">Key Metrics</h3>
+            <UiBadge
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-white/20 text-white/50'
+                    : 'border-gray-200 text-gray-400'
+                )
+              "
+            >
+              Placeholder
+            </UiBadge>
+          </div>
 
           <div class="grid grid-cols-2 gap-4">
             <div
@@ -549,7 +714,22 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             )
           "
         >
-          <h3 class="font-semibold mb-4">Performance Breakdown</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold">Performance Breakdown</h3>
+            <UiBadge
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-white/20 text-white/50'
+                    : 'border-gray-200 text-gray-400'
+                )
+              "
+            >
+              Placeholder
+            </UiBadge>
+          </div>
 
           <div class="space-y-4">
             <div>
@@ -706,10 +886,25 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 5 most critical moments identified
               </p>
             </div>
-            <UiBadge variant="outline" class="border-red-500/30 text-red-400">
-              <Icon name="lucide:video" class="w-3 h-3 mr-1" />
-              YouTube Linked
-            </UiBadge>
+            <div class="flex items-center gap-2">
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-white/20 text-white/50'
+                      : 'border-gray-200 text-gray-400'
+                  )
+                "
+              >
+                Sample Data
+              </UiBadge>
+              <UiBadge variant="outline" class="border-red-500/30 text-red-400">
+                <Icon name="lucide:video" class="w-3 h-3 mr-1" />
+                YouTube Linked
+              </UiBadge>
+            </div>
           </div>
 
           <div class="space-y-4">
@@ -947,18 +1142,36 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             )
           "
         >
-          <div class="flex items-center gap-2 mb-4">
-            <Icon name="lucide:target" class="w-5 h-5 text-emerald-400" />
-            <div>
-              <h3 class="font-semibold">1-Week Development Mission</h3>
-              <p
-                :class="
-                  cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
-                "
-              >
-                Focus: Scanning Under Pressure
-              </p>
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <Icon name="lucide:target" class="w-5 h-5 text-emerald-400" />
+              <div>
+                <h3 class="font-semibold">1-Week Development Mission</h3>
+                <p
+                  :class="
+                    cn(
+                      'text-xs',
+                      isDarkMode ? 'text-white/50' : 'text-gray-500'
+                    )
+                  "
+                >
+                  Focus: Scanning Under Pressure
+                </p>
+              </div>
             </div>
+            <UiBadge
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-emerald-500/30 text-emerald-400'
+                    : 'border-emerald-300 text-emerald-600'
+                )
+              "
+            >
+              AI Generated
+            </UiBadge>
           </div>
 
           <div class="space-y-3">
@@ -1185,5 +1398,351 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
         </UiCard>
       </div>
     </div>
+
+    <!-- Video Source Modal -->
+    <Teleport to="body">
+      <div
+        v-if="showVideoSourceModal"
+        class="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      >
+        <!-- Backdrop -->
+        <div
+          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          @click="showVideoSourceModal = false"
+        ></div>
+
+        <!-- Modal Content -->
+        <div
+          :class="
+            cn(
+              'relative w-full max-w-lg rounded-2xl border shadow-2xl p-8',
+              isDarkMode
+                ? 'bg-[#12141f] border-white/10'
+                : 'bg-white border-gray-200'
+            )
+          "
+        >
+          <!-- Close Button -->
+          <button
+            @click="showVideoSourceModal = false"
+            :class="
+              cn(
+                'absolute top-4 right-4 p-2 rounded-lg transition-colors',
+                isDarkMode
+                  ? 'hover:bg-white/10 text-white/50'
+                  : 'hover:bg-gray-100 text-gray-400'
+              )
+            "
+          >
+            <Icon name="lucide:x" class="w-5 h-5" />
+          </button>
+
+          <!-- Header -->
+          <div class="flex items-center gap-3 mb-6">
+            <div
+              class="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center"
+            >
+              <Icon name="lucide:video" class="w-6 h-6 text-emerald-400" />
+            </div>
+            <div>
+              <h3
+                :class="
+                  cn(
+                    'text-xl font-semibold',
+                    isDarkMode ? 'text-white' : 'text-gray-900'
+                  )
+                "
+              >
+                Add Video Source
+              </h3>
+              <p
+                :class="
+                  cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')
+                "
+              >
+                Upload footage or paste a YouTube link
+              </p>
+            </div>
+          </div>
+
+          <!-- Source Selection Tabs -->
+          <div class="flex gap-2 mb-6">
+            <button
+              @click="selectVideoSource('youtube')"
+              :class="
+                cn(
+                  'flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border transition-all',
+                  videoSourceType === 'youtube'
+                    ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                    : isDarkMode
+                    ? 'bg-[#0a0b14] border-white/10 text-white/60 hover:border-white/20'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'
+                )
+              "
+            >
+              <Icon name="lucide:youtube" class="w-5 h-5" />
+              <span class="font-medium">YouTube Link</span>
+            </button>
+            <button
+              @click="selectVideoSource('upload')"
+              :class="
+                cn(
+                  'flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border transition-all',
+                  videoSourceType === 'upload'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                    : isDarkMode
+                    ? 'bg-[#0a0b14] border-white/10 text-white/60 hover:border-white/20'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'
+                )
+              "
+            >
+              <Icon name="lucide:upload" class="w-5 h-5" />
+              <span class="font-medium">Upload Video</span>
+            </button>
+          </div>
+
+          <!-- YouTube Input -->
+          <div v-if="videoSourceType === 'youtube'" class="mb-6">
+            <label
+              :class="
+                cn(
+                  'block text-sm font-medium mb-2',
+                  isDarkMode ? 'text-white/70' : 'text-gray-700'
+                )
+              "
+            >
+              YouTube URL
+            </label>
+            <div class="relative">
+              <div
+                class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
+              >
+                <Icon
+                  name="lucide:link"
+                  :class="
+                    cn(
+                      'w-4 h-4',
+                      isDarkMode ? 'text-white/40' : 'text-gray-400'
+                    )
+                  "
+                />
+              </div>
+              <input
+                v-model="youtubeUrl"
+                type="url"
+                placeholder="https://youtube.com/watch?v=..."
+                :class="
+                  cn(
+                    'w-full pl-11 pr-4 py-3 rounded-xl border text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50',
+                    isDarkMode
+                      ? 'bg-[#0a0b14] border-white/10 text-white placeholder-white/30 focus:border-red-500/50'
+                      : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400 focus:border-red-400'
+                  )
+                "
+                @keyup.enter="startAnalysis"
+              />
+            </div>
+            <p
+              :class="
+                cn(
+                  'text-xs mt-2',
+                  isDarkMode ? 'text-white/40' : 'text-gray-400'
+                )
+              "
+            >
+              Paste the full YouTube URL of your match footage
+            </p>
+          </div>
+
+          <!-- Upload Input -->
+          <div v-if="videoSourceType === 'upload'" class="mb-6">
+            <label
+              :class="
+                cn(
+                  'block text-sm font-medium mb-2',
+                  isDarkMode ? 'text-white/70' : 'text-gray-700'
+                )
+              "
+            >
+              Video File
+            </label>
+            <div
+              :class="
+                cn(
+                  'border-2 border-dashed rounded-xl p-6 text-center transition-colors',
+                  uploadedFileName
+                    ? isDarkMode
+                      ? 'border-emerald-500/30 bg-emerald-500/5'
+                      : 'border-emerald-300 bg-emerald-50'
+                    : isDarkMode
+                    ? 'border-white/10 hover:border-white/20'
+                    : 'border-gray-200 hover:border-gray-300'
+                )
+              "
+            >
+              <input
+                type="file"
+                accept="video/*"
+                class="hidden"
+                id="video-upload"
+                @change="handleFileUpload"
+              />
+              <label for="video-upload" class="cursor-pointer">
+                <div
+                  v-if="uploadedFileName"
+                  class="flex items-center justify-center gap-2"
+                >
+                  <Icon
+                    name="lucide:file-video"
+                    class="w-8 h-8 text-emerald-400"
+                  />
+                  <div class="text-left">
+                    <p
+                      :class="
+                        cn(
+                          'font-medium',
+                          isDarkMode ? 'text-white' : 'text-gray-900'
+                        )
+                      "
+                    >
+                      {{ uploadedFileName }}
+                    </p>
+                    <p
+                      :class="
+                        cn(
+                          'text-xs',
+                          isDarkMode ? 'text-white/50' : 'text-gray-500'
+                        )
+                      "
+                    >
+                      Click to change file
+                    </p>
+                  </div>
+                </div>
+                <div v-else>
+                  <Icon
+                    name="lucide:upload-cloud"
+                    :class="
+                      cn(
+                        'w-10 h-10 mx-auto mb-2',
+                        isDarkMode ? 'text-white/30' : 'text-gray-300'
+                      )
+                    "
+                  />
+                  <p
+                    :class="
+                      cn(
+                        'font-medium',
+                        isDarkMode ? 'text-white/70' : 'text-gray-600'
+                      )
+                    "
+                  >
+                    Click to upload video
+                  </p>
+                  <p
+                    :class="
+                      cn(
+                        'text-xs mt-1',
+                        isDarkMode ? 'text-white/40' : 'text-gray-400'
+                      )
+                    "
+                  >
+                    MP4, MOV, AVI up to 2GB
+                  </p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- No selection prompt -->
+          <div
+            v-if="videoSourceType === 'none'"
+            :class="
+              cn(
+                'rounded-xl p-6 mb-6 text-center border',
+                isDarkMode
+                  ? 'bg-[#0a0b14] border-white/10'
+                  : 'bg-gray-50 border-gray-100'
+              )
+            "
+          >
+            <Icon
+              name="lucide:mouse-pointer-click"
+              :class="
+                cn(
+                  'w-8 h-8 mx-auto mb-2',
+                  isDarkMode ? 'text-white/30' : 'text-gray-300'
+                )
+              "
+            />
+            <p
+              :class="
+                cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')
+              "
+            >
+              Select a video source above to continue
+            </p>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex gap-3">
+            <UiButton
+              variant="outline"
+              :class="
+                cn(
+                  'flex-1',
+                  isDarkMode
+                    ? 'border-white/20 text-white/70 hover:bg-white/5'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                )
+              "
+              @click="showVideoSourceModal = false"
+            >
+              Cancel
+            </UiButton>
+            <UiButton
+              :class="
+                cn(
+                  'flex-1',
+                  (videoSourceType === 'youtube' && youtubeUrl.trim()) ||
+                    (videoSourceType === 'upload' && uploadedFileName)
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                    : isDarkMode
+                    ? 'bg-white/10 text-white/30 cursor-not-allowed'
+                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                )
+              "
+              :disabled="
+                !(
+                  (videoSourceType === 'youtube' && youtubeUrl.trim()) ||
+                  (videoSourceType === 'upload' && uploadedFileName)
+                )
+              "
+              @click="startAnalysis"
+            >
+              <Icon name="lucide:sparkles" class="w-4 h-4 mr-2" />
+              Analyze Video
+            </UiButton>
+          </div>
+
+          <!-- Info footer -->
+          <div class="mt-6 flex items-center justify-center gap-2">
+            <Icon
+              name="lucide:info"
+              :class="
+                cn('w-4 h-4', isDarkMode ? 'text-white/30' : 'text-gray-300')
+              "
+            />
+            <span
+              :class="
+                cn('text-xs', isDarkMode ? 'text-white/40' : 'text-gray-400')
+              "
+            >
+              AI will analyze the video and generate personalized insights
+            </span>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

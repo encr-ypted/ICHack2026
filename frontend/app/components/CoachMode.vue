@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { cn } from "~/utils/cn";
 
+interface Props {
+  streamLink?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  streamLink: "",
+});
+
 const emit = defineEmits<{
   navigate: [screen: "landing" | "coach" | "player"];
 }>();
@@ -12,6 +20,15 @@ const expectedThreat = ref(0.68);
 const isLive = ref(true);
 const matchTime = ref(68);
 const showOverlay = ref(false);
+
+// Display stream info
+const streamConnected = computed(() => !!props.streamLink);
+const truncatedStreamLink = computed(() => {
+  if (!props.streamLink) return "";
+  return props.streamLink.length > 40
+    ? props.streamLink.substring(0, 40) + "..."
+    : props.streamLink;
+});
 
 // Simulate live updates
 let interval: ReturnType<typeof setInterval> | null = null;
@@ -167,7 +184,34 @@ const overlayWaveHeights = Array.from(
               <Icon v-else name="lucide:moon" class="w-5 h-5" />
             </button>
 
-            <div class="flex items-center gap-2">
+            <!-- Stream Connection Status -->
+            <div
+              v-if="streamConnected"
+              :class="
+                cn(
+                  'flex items-center gap-2 px-3 py-2 rounded-lg border',
+                  isDarkMode
+                    ? 'bg-emerald-500/10 border-emerald-500/30'
+                    : 'bg-emerald-50 border-emerald-200'
+                )
+              "
+            >
+              <Icon name="lucide:link" class="w-4 h-4 text-emerald-400" />
+              <span
+                :class="
+                  cn(
+                    'text-sm',
+                    isDarkMode ? 'text-emerald-300' : 'text-emerald-700'
+                  )
+                "
+              >
+                {{ truncatedStreamLink }}
+              </span>
+              <span
+                class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"
+              ></span>
+            </div>
+            <div v-else class="flex items-center gap-2">
               <span
                 :class="
                   cn('text-sm', isDarkMode ? 'text-white/70' : 'text-gray-600')

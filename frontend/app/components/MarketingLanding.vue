@@ -2,12 +2,31 @@
 import { cn } from "~/utils/cn";
 
 const emit = defineEmits<{
-  navigate: [screen: "landing" | "coach" | "player"];
+  navigate: [screen: "landing" | "coach" | "player", streamLink?: string];
 }>();
 
 const { isDarkMode, toggleTheme } = useTheme();
 
 const mobileMenuOpen = ref(false);
+const showStreamModal = ref(false);
+const streamLink = ref("");
+
+const openStreamModal = () => {
+  showStreamModal.value = true;
+};
+
+const connectToStream = () => {
+  if (streamLink.value.trim()) {
+    emit("navigate", "coach", streamLink.value);
+    showStreamModal.value = false;
+    streamLink.value = "";
+  }
+};
+
+const closeModal = () => {
+  showStreamModal.value = false;
+  streamLink.value = "";
+};
 </script>
 
 <template>
@@ -64,7 +83,7 @@ const mobileMenuOpen = ref(false);
               Landing Page
             </button>
             <button
-              @click="emit('navigate', 'coach')"
+              @click="openStreamModal"
               :class="
                 cn(
                   'text-sm transition-colors',
@@ -153,7 +172,7 @@ const mobileMenuOpen = ref(false);
               Landing Page
             </button>
             <button
-              @click="emit('navigate', 'coach')"
+              @click="openStreamModal"
               :class="
                 cn(
                   'text-sm transition-colors',
@@ -249,7 +268,7 @@ const mobileMenuOpen = ref(false);
               class="bg-emerald-500 hover:bg-emerald-600 text-white px-8"
               @click="emit('navigate', 'player')"
             >
-              Start the Wow Demo
+              Click here to Demo
               <Icon name="lucide:chevron-right" class="w-4 h-4 ml-2" />
             </UiButton>
             <UiButton
@@ -263,9 +282,10 @@ const mobileMenuOpen = ref(false);
                     : 'border-gray-300 bg-white text-gray-900 hover:bg-gray-50'
                 )
               "
-              @click="emit('navigate', 'coach')"
+              @click="openStreamModal"
             >
-              Explore CoachMode
+              <Icon name="lucide:radio" class="w-4 h-4 mr-2" />
+              Connect to Live Stream
             </UiButton>
           </div>
 
@@ -309,7 +329,7 @@ const mobileMenuOpen = ref(false);
                   : 'bg-white border-gray-200 hover:border-amber-400'
               )
             "
-            @click="emit('navigate', 'coach')"
+            @click="openStreamModal"
           >
             <div class="flex items-center gap-2 mb-4">
               <Icon name="lucide:radio" class="w-5 h-5 text-amber-400" />
@@ -538,7 +558,7 @@ const mobileMenuOpen = ref(false);
               Landing Page
             </button>
             <button
-              @click="emit('navigate', 'coach')"
+              @click="openStreamModal"
               :class="isDarkMode ? 'hover:text-white' : 'hover:text-gray-900'"
             >
               CoachMode
@@ -567,5 +587,251 @@ const mobileMenuOpen = ref(false);
         </div>
       </div>
     </footer>
+
+    <!-- Stream Connection Modal -->
+    <Teleport to="body">
+      <div
+        v-if="showStreamModal"
+        class="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      >
+        <!-- Backdrop -->
+        <div
+          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          @click="closeModal"
+        ></div>
+
+        <!-- Modal Content -->
+        <div
+          :class="
+            cn(
+              'relative w-full max-w-lg rounded-2xl border shadow-2xl p-8',
+              isDarkMode
+                ? 'bg-[#12141f] border-white/10'
+                : 'bg-white border-gray-200'
+            )
+          "
+        >
+          <!-- Close Button -->
+          <button
+            @click="closeModal"
+            :class="
+              cn(
+                'absolute top-4 right-4 p-2 rounded-lg transition-colors',
+                isDarkMode
+                  ? 'hover:bg-white/10 text-white/50'
+                  : 'hover:bg-gray-100 text-gray-400'
+              )
+            "
+          >
+            <Icon name="lucide:x" class="w-5 h-5" />
+          </button>
+
+          <!-- Header -->
+          <div class="flex items-center gap-3 mb-6">
+            <div
+              class="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center"
+            >
+              <Icon name="lucide:radio" class="w-6 h-6 text-amber-400" />
+            </div>
+            <div>
+              <h3
+                :class="
+                  cn(
+                    'text-xl font-semibold',
+                    isDarkMode ? 'text-white' : 'text-gray-900'
+                  )
+                "
+              >
+                Connect to Live Stream
+              </h3>
+              <p
+                :class="
+                  cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')
+                "
+              >
+                Enter your match stream URL to begin
+              </p>
+            </div>
+          </div>
+
+          <!-- Input -->
+          <div class="mb-6">
+            <label
+              :class="
+                cn(
+                  'block text-sm font-medium mb-2',
+                  isDarkMode ? 'text-white/70' : 'text-gray-700'
+                )
+              "
+            >
+              Stream URL
+            </label>
+            <div class="relative">
+              <div
+                class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
+              >
+                <Icon
+                  name="lucide:link"
+                  :class="
+                    cn(
+                      'w-4 h-4',
+                      isDarkMode ? 'text-white/40' : 'text-gray-400'
+                    )
+                  "
+                />
+              </div>
+              <input
+                v-model="streamLink"
+                type="url"
+                placeholder="https://stream.example.com/match/live"
+                :class="
+                  cn(
+                    'w-full pl-11 pr-4 py-3 rounded-xl border text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500/50',
+                    isDarkMode
+                      ? 'bg-[#0a0b14] border-white/10 text-white placeholder-white/30 focus:border-amber-500/50'
+                      : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400 focus:border-amber-400'
+                  )
+                "
+                @keyup.enter="connectToStream"
+              />
+            </div>
+            <p
+              :class="
+                cn(
+                  'text-xs mt-2',
+                  isDarkMode ? 'text-white/40' : 'text-gray-400'
+                )
+              "
+            >
+              Paste the URL of your live match broadcast or streaming service
+            </p>
+          </div>
+
+          <!-- Supported Platforms -->
+          <div
+            :class="
+              cn(
+                'rounded-xl p-4 mb-6 border',
+                isDarkMode
+                  ? 'bg-[#0a0b14] border-white/10'
+                  : 'bg-gray-50 border-gray-100'
+              )
+            "
+          >
+            <p
+              :class="
+                cn(
+                  'text-xs font-medium mb-3',
+                  isDarkMode ? 'text-white/50' : 'text-gray-500'
+                )
+              "
+            >
+              SUPPORTED PLATFORMS
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-white/20 text-white/60'
+                      : 'border-gray-200 text-gray-600'
+                  )
+                "
+              >
+                YouTube Live
+              </UiBadge>
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-white/20 text-white/60'
+                      : 'border-gray-200 text-gray-600'
+                  )
+                "
+              >
+                Twitch
+              </UiBadge>
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-white/20 text-white/60'
+                      : 'border-gray-200 text-gray-600'
+                  )
+                "
+              >
+                RTMP Streams
+              </UiBadge>
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-white/20 text-white/60'
+                      : 'border-gray-200 text-gray-600'
+                  )
+                "
+              >
+                HLS/DASH
+              </UiBadge>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex gap-3">
+            <UiButton
+              variant="outline"
+              :class="
+                cn(
+                  'flex-1',
+                  isDarkMode
+                    ? 'border-white/20 text-white/70 hover:bg-white/5'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                )
+              "
+              @click="closeModal"
+            >
+              Cancel
+            </UiButton>
+            <UiButton
+              :class="
+                cn(
+                  'flex-1',
+                  streamLink.trim()
+                    ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                    : isDarkMode
+                    ? 'bg-white/10 text-white/30 cursor-not-allowed'
+                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                )
+              "
+              :disabled="!streamLink.trim()"
+              @click="connectToStream"
+            >
+              <Icon name="lucide:radio" class="w-4 h-4 mr-2" />
+              Connect & Launch
+            </UiButton>
+          </div>
+
+          <!-- Live indicator -->
+          <div class="mt-6 flex items-center justify-center gap-2">
+            <span class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+            <span
+              :class="
+                cn('text-xs', isDarkMode ? 'text-white/40' : 'text-gray-400')
+              "
+            >
+              Real-time tactical analysis will begin once connected
+            </span>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
