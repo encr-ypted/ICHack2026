@@ -59,6 +59,15 @@ interface PlayerStats {
   pass_accuracy: string;
   shots: number;
   goals: number;
+  total_xt?: number;
+  progressive_passes?: number;
+  progressive_pass_accuracy?: string;
+  passes_into_final_third?: number;
+  passes_into_box?: number;
+  through_balls?: number;
+  key_passes?: number;
+  actions_under_pressure?: number;
+  pressure_success_pct?: string;
 }
 
 interface PlayerInfo {
@@ -956,6 +965,54 @@ onMounted(() => {
                 >
                   Focus points
                 </span>
+              </div>
+            </div>
+
+            <!-- Advanced: Total xT -->
+            <div v-if="playerAnalysis?.stats?.total_xt != null" :class="cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-slate-50')">
+              <div :class="cn('text-2xl font-bold mb-1', (playerAnalysis?.stats?.total_xt ?? 0) >= 0 ? (isDarkMode ? 'text-emerald-400' : 'text-emerald-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600'))">
+                {{ (playerAnalysis?.stats?.total_xt ?? 0) >= 0 ? '+' : '' }}{{ playerAnalysis?.stats?.total_xt?.toFixed(2) ?? '—' }}
+              </div>
+              <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Total xT</div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:zap" class="w-3 h-3 text-slate-400" />
+                <span :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-600')">Expected Threat</span>
+              </div>
+            </div>
+
+            <!-- Advanced: Progressive Passes -->
+            <div v-if="playerAnalysis?.stats?.progressive_passes != null" :class="cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-indigo-50')">
+              <div :class="cn('text-2xl font-bold mb-1', isDarkMode ? 'text-indigo-400' : 'text-indigo-600')">
+                {{ playerAnalysis?.stats?.progressive_passes ?? 0 }}
+              </div>
+              <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Progressive Passes</div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:move-forward" class="w-3 h-3 text-indigo-400" />
+                <span :class="cn('text-xs', isDarkMode ? 'text-indigo-400' : 'text-indigo-600')">{{ playerAnalysis?.stats?.progressive_pass_accuracy ?? 'N/A' }}</span>
+              </div>
+            </div>
+
+            <!-- Advanced: Key Passes -->
+            <div v-if="playerAnalysis?.stats?.key_passes != null" :class="cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-orange-50')">
+              <div :class="cn('text-2xl font-bold mb-1', isDarkMode ? 'text-orange-400' : 'text-orange-600')">
+                {{ playerAnalysis?.stats?.key_passes ?? 0 }}
+              </div>
+              <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Key Passes</div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:key" class="w-3 h-3 text-orange-400" />
+                <span :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-600')">{{ playerAnalysis?.stats?.passes_into_box ?? 0 }} into box</span>
+              </div>
+            </div>
+
+            <!-- Advanced: Under Pressure -->
+            <div v-if="playerAnalysis?.stats?.actions_under_pressure != null" :class="cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-rose-50')">
+              <div :class="cn('text-2xl font-bold mb-1', isDarkMode ? 'text-rose-400' : 'text-rose-600')">
+                {{ playerAnalysis?.stats?.actions_under_pressure ?? 0 }}
+              </div>
+              <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Under Pressure</div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:gauge" class="w-3 h-3 text-rose-400" />
+                <span :class="cn('text-xs', isDarkMode ? 'text-rose-400' : 'text-rose-600')">{{ playerAnalysis?.stats?.pressure_success_pct ?? 'N/A' }} success</span>
               </div>
             </div>
           </div>
