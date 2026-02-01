@@ -28,19 +28,262 @@ except ImportError:
 MATCH_ID = 3869151
 MODELS_DIR = Path(__file__).parent / "models"
 
-# World Cup 2022 matches - All Argentina matches
-# Cached data exists for most; others will be fetched from StatsBomb if statsbombpy is installed
-WORLD_CUP_MATCHES = [
-    # Group Stage
-    {"match_id": 3857300, "match_title": "argentina_v_saudi_arabia", "label": "Argentina 1-2 Saudi Arabia", "stage": "Group Stage", "date": "2022-11-22"},
-    {"match_id": 3857289, "match_title": "argentina_v_mexico", "label": "Argentina 2-0 Mexico", "stage": "Group Stage", "date": "2022-11-26"},
-    {"match_id": 3857264, "match_title": "poland_v_argentina", "label": "Poland 0-2 Argentina", "stage": "Group Stage", "date": "2022-11-30"},
-    # Knockout Stage
-    {"match_id": 3869151, "match_title": "argentina_v_france", "label": "Argentina 2-1 Australia (R16)", "stage": "Round of 16", "date": "2022-12-03"},
-    {"match_id": 3869321, "match_title": "netherlands_v_argentina", "label": "Netherlands 2-2 Argentina (QF)", "stage": "Quarter-finals", "date": "2022-12-09"},
-    {"match_id": 3869519, "match_title": "argentina_v_croatia", "label": "Argentina 3-0 Croatia (SF)", "stage": "Semi-finals", "date": "2022-12-13"},
-    {"match_id": 3869685, "match_title": "argentina_v_france_final", "label": "Argentina 3-3 France (Final)", "stage": "Final", "date": "2022-12-18"},
-]
+# ============================================
+# COMPETITION CONFIGURATION
+# ============================================
+# StatsBomb Open Data - Available Competitions
+COMPETITIONS = {
+    "wc2022": {
+        "id": "wc2022",
+        "name": "FIFA World Cup 2022",
+        "short_name": "WC 2022",
+        "competition_id": 43,
+        "season_id": 106,
+        "country": "International",
+        "year": 2022
+    },
+    "euro2024": {
+        "id": "euro2024",
+        "name": "UEFA Euro 2024",
+        "short_name": "Euro 2024",
+        "competition_id": 55,
+        "season_id": 282,
+        "country": "Europe",
+        "year": 2024
+    },
+    "euro2020": {
+        "id": "euro2020",
+        "name": "UEFA Euro 2020",
+        "short_name": "Euro 2020",
+        "competition_id": 55,
+        "season_id": 43,
+        "country": "Europe",
+        "year": 2021
+    },
+    "wc2018": {
+        "id": "wc2018",
+        "name": "FIFA World Cup 2018",
+        "short_name": "WC 2018",
+        "competition_id": 43,
+        "season_id": 3,
+        "country": "International",
+        "year": 2018
+    },
+    "copa2024": {
+        "id": "copa2024",
+        "name": "Copa America 2024",
+        "short_name": "Copa 2024",
+        "competition_id": 223,
+        "season_id": 282,
+        "country": "South America",
+        "year": 2024
+    },
+}
+
+# Default competition
+DEFAULT_COMPETITION = "wc2022"
+
+# Match data organized by competition
+# World Cup 2022 matches - Full tournament data
+COMPETITION_MATCHES = {
+    "wc2022": [
+    # === ARGENTINA ===
+    {"match_id": 3857300, "match_title": "argentina_v_saudi_arabia", "label": "Argentina 1-2 Saudi Arabia", "stage": "Group Stage", "date": "2022-11-22", "teams": ["Argentina", "Saudi Arabia"]},
+    {"match_id": 3857289, "match_title": "argentina_v_mexico", "label": "Argentina 2-0 Mexico", "stage": "Group Stage", "date": "2022-11-26", "teams": ["Argentina", "Mexico"]},
+    {"match_id": 3857264, "match_title": "poland_v_argentina", "label": "Poland 0-2 Argentina", "stage": "Group Stage", "date": "2022-11-30", "teams": ["Poland", "Argentina"]},
+    {"match_id": 3869151, "match_title": "argentina_v_france", "label": "Argentina 2-1 Australia (R16)", "stage": "Round of 16", "date": "2022-12-03", "teams": ["Argentina", "Australia"]},
+    {"match_id": 3869321, "match_title": "netherlands_v_argentina", "label": "Netherlands 2-2 Argentina (QF)", "stage": "Quarter-finals", "date": "2022-12-09", "teams": ["Netherlands", "Argentina"]},
+    {"match_id": 3869519, "match_title": "argentina_v_croatia", "label": "Argentina 3-0 Croatia (SF)", "stage": "Semi-finals", "date": "2022-12-13", "teams": ["Argentina", "Croatia"]},
+    {"match_id": 3869685, "match_title": "argentina_v_france_final", "label": "Argentina 3-3 France (Final)", "stage": "Final", "date": "2022-12-18", "teams": ["Argentina", "France"]},
+    # === FRANCE ===
+    {"match_id": 3857279, "match_title": "france_v_australia", "label": "France 4-1 Australia", "stage": "Group Stage", "date": "2022-11-22", "teams": ["France", "Australia"]},
+    {"match_id": 3857266, "match_title": "france_v_denmark", "label": "France 2-1 Denmark", "stage": "Group Stage", "date": "2022-11-26", "teams": ["France", "Denmark"]},
+    {"match_id": 3857275, "match_title": "tunisia_v_france", "label": "Tunisia 1-0 France", "stage": "Group Stage", "date": "2022-11-30", "teams": ["Tunisia", "France"]},
+    {"match_id": 3869152, "match_title": "france_v_poland", "label": "France 3-1 Poland (R16)", "stage": "Round of 16", "date": "2022-12-04", "teams": ["France", "Poland"]},
+    {"match_id": 3869354, "match_title": "england_v_france", "label": "England 1-2 France (QF)", "stage": "Quarter-finals", "date": "2022-12-10", "teams": ["England", "France"]},
+    {"match_id": 3869552, "match_title": "france_v_morocco", "label": "France 2-0 Morocco (SF)", "stage": "Semi-finals", "date": "2022-12-14", "teams": ["France", "Morocco"]},
+    # === BRAZIL ===
+    {"match_id": 3857258, "match_title": "brazil_v_serbia", "label": "Brazil 2-0 Serbia", "stage": "Group Stage", "date": "2022-11-24", "teams": ["Brazil", "Serbia"]},
+    {"match_id": 3857269, "match_title": "brazil_v_switzerland", "label": "Brazil 1-0 Switzerland", "stage": "Group Stage", "date": "2022-11-28", "teams": ["Brazil", "Switzerland"]},
+    {"match_id": 3857280, "match_title": "cameroon_v_brazil", "label": "Cameroon 1-0 Brazil", "stage": "Group Stage", "date": "2022-12-02", "teams": ["Cameroon", "Brazil"]},
+    {"match_id": 3869253, "match_title": "brazil_v_south_korea", "label": "Brazil 4-1 South Korea (R16)", "stage": "Round of 16", "date": "2022-12-05", "teams": ["Brazil", "South Korea"]},
+    {"match_id": 3869420, "match_title": "croatia_v_brazil", "label": "Croatia 1-1 Brazil (QF)", "stage": "Quarter-finals", "date": "2022-12-09", "teams": ["Croatia", "Brazil"]},
+    # === ENGLAND ===
+    {"match_id": 3857271, "match_title": "england_v_iran", "label": "England 6-2 Iran", "stage": "Group Stage", "date": "2022-11-21", "teams": ["England", "Iran"]},
+    {"match_id": 3857272, "match_title": "england_v_usa", "label": "England 0-0 USA", "stage": "Group Stage", "date": "2022-11-25", "teams": ["England", "United States"]},
+    {"match_id": 3857261, "match_title": "wales_v_england", "label": "Wales 0-3 England", "stage": "Group Stage", "date": "2022-11-29", "teams": ["Wales", "England"]},
+    {"match_id": 3869118, "match_title": "england_v_senegal", "label": "England 3-0 Senegal (R16)", "stage": "Round of 16", "date": "2022-12-04", "teams": ["England", "Senegal"]},
+    # === SPAIN ===
+    {"match_id": 3857291, "match_title": "spain_v_costa_rica", "label": "Spain 7-0 Costa Rica", "stage": "Group Stage", "date": "2022-11-23", "teams": ["Spain", "Costa Rica"]},
+    {"match_id": 3857263, "match_title": "spain_v_germany", "label": "Spain 1-1 Germany", "stage": "Group Stage", "date": "2022-11-27", "teams": ["Spain", "Germany"]},
+    {"match_id": 3869220, "match_title": "morocco_v_spain", "label": "Morocco 0-0 Spain (R16)", "stage": "Round of 16", "date": "2022-12-06", "teams": ["Morocco", "Spain"]},
+    # === GERMANY ===
+    {"match_id": 3857284, "match_title": "germany_v_japan", "label": "Germany 1-2 Japan", "stage": "Group Stage", "date": "2022-11-23", "teams": ["Germany", "Japan"]},
+    {"match_id": 3857292, "match_title": "costa_rica_v_germany", "label": "Costa Rica 2-4 Germany", "stage": "Group Stage", "date": "2022-12-01", "teams": ["Costa Rica", "Germany"]},
+    # === PORTUGAL ===
+    {"match_id": 3857298, "match_title": "portugal_v_ghana", "label": "Portugal 3-2 Ghana", "stage": "Group Stage", "date": "2022-11-24", "teams": ["Portugal", "Ghana"]},
+    {"match_id": 3857270, "match_title": "portugal_v_uruguay", "label": "Portugal 2-0 Uruguay", "stage": "Group Stage", "date": "2022-11-28", "teams": ["Portugal", "Uruguay"]},
+    {"match_id": 3857262, "match_title": "south_korea_v_portugal", "label": "South Korea 2-1 Portugal", "stage": "Group Stage", "date": "2022-12-02", "teams": ["South Korea", "Portugal"]},
+    {"match_id": 3869254, "match_title": "portugal_v_switzerland", "label": "Portugal 6-1 Switzerland (R16)", "stage": "Round of 16", "date": "2022-12-06", "teams": ["Portugal", "Switzerland"]},
+    {"match_id": 3869486, "match_title": "morocco_v_portugal", "label": "Morocco 1-0 Portugal (QF)", "stage": "Quarter-finals", "date": "2022-12-10", "teams": ["Morocco", "Portugal"]},
+    # === MOROCCO ===
+    {"match_id": 3857277, "match_title": "morocco_v_croatia", "label": "Morocco 0-0 Croatia", "stage": "Group Stage", "date": "2022-11-23", "teams": ["Morocco", "Croatia"]},
+    {"match_id": 3857283, "match_title": "belgium_v_morocco", "label": "Belgium 0-2 Morocco", "stage": "Group Stage", "date": "2022-11-27", "teams": ["Belgium", "Morocco"]},
+    {"match_id": 3857276, "match_title": "canada_v_morocco", "label": "Canada 1-2 Morocco", "stage": "Group Stage", "date": "2022-12-01", "teams": ["Canada", "Morocco"]},
+    {"match_id": 3869684, "match_title": "croatia_v_morocco", "label": "Croatia 2-1 Morocco (3rd)", "stage": "3rd Place", "date": "2022-12-17", "teams": ["Croatia", "Morocco"]},
+    # === NETHERLANDS ===
+    {"match_id": 3857285, "match_title": "senegal_v_netherlands", "label": "Senegal 0-2 Netherlands", "stage": "Group Stage", "date": "2022-11-21", "teams": ["Senegal", "Netherlands"]},
+    {"match_id": 3857274, "match_title": "netherlands_v_ecuador", "label": "Netherlands 1-1 Ecuador", "stage": "Group Stage", "date": "2022-11-25", "teams": ["Netherlands", "Ecuador"]},
+    {"match_id": 3857294, "match_title": "netherlands_v_qatar", "label": "Netherlands 2-0 Qatar", "stage": "Group Stage", "date": "2022-11-29", "teams": ["Netherlands", "Qatar"]},
+    {"match_id": 3869117, "match_title": "netherlands_v_usa", "label": "Netherlands 3-1 USA (R16)", "stage": "Round of 16", "date": "2022-12-03", "teams": ["Netherlands", "United States"]},
+    # === CROATIA ===
+    {"match_id": 3857296, "match_title": "croatia_v_belgium", "label": "Croatia 0-0 Belgium", "stage": "Group Stage", "date": "2022-12-01", "teams": ["Croatia", "Belgium"]},
+    {"match_id": 3857281, "match_title": "croatia_v_canada", "label": "Croatia 4-1 Canada", "stage": "Group Stage", "date": "2022-11-27", "teams": ["Croatia", "Canada"]},
+    {"match_id": 3869219, "match_title": "japan_v_croatia", "label": "Japan 1-1 Croatia (R16)", "stage": "Round of 16", "date": "2022-12-05", "teams": ["Japan", "Croatia"]},
+    # === JAPAN ===
+    {"match_id": 3857295, "match_title": "japan_v_costa_rica", "label": "Japan 0-1 Costa Rica", "stage": "Group Stage", "date": "2022-11-27", "teams": ["Japan", "Costa Rica"]},
+    {"match_id": 3857255, "match_title": "japan_v_spain", "label": "Japan 2-1 Spain", "stage": "Group Stage", "date": "2022-12-01", "teams": ["Japan", "Spain"]},
+    ],
+    
+    # UEFA Euro 2024 - Key matches (more can be fetched dynamically)
+    "euro2024": [
+        # === SPAIN (Winner) ===
+        {"match_id": 3942453, "match_title": "spain_v_croatia", "label": "Spain 3-0 Croatia", "stage": "Group Stage", "date": "2024-06-15", "teams": ["Spain", "Croatia"]},
+        {"match_id": 3942459, "match_title": "spain_v_italy", "label": "Spain 1-0 Italy", "stage": "Group Stage", "date": "2024-06-20", "teams": ["Spain", "Italy"]},
+        {"match_id": 3942549, "match_title": "spain_v_germany", "label": "Spain 2-1 Germany (QF)", "stage": "Quarter-finals", "date": "2024-07-05", "teams": ["Spain", "Germany"]},
+        {"match_id": 3942553, "match_title": "spain_v_france", "label": "Spain 2-1 France (SF)", "stage": "Semi-finals", "date": "2024-07-09", "teams": ["Spain", "France"]},
+        {"match_id": 3942555, "match_title": "spain_v_england", "label": "Spain 2-1 England (Final)", "stage": "Final", "date": "2024-07-14", "teams": ["Spain", "England"]},
+        # === ENGLAND ===
+        {"match_id": 3942454, "match_title": "england_v_serbia", "label": "England 1-0 Serbia", "stage": "Group Stage", "date": "2024-06-16", "teams": ["England", "Serbia"]},
+        {"match_id": 3942461, "match_title": "denmark_v_england", "label": "Denmark 1-1 England", "stage": "Group Stage", "date": "2024-06-20", "teams": ["Denmark", "England"]},
+        {"match_id": 3942545, "match_title": "england_v_switzerland", "label": "England 1-1 Switzerland (QF)", "stage": "Quarter-finals", "date": "2024-07-06", "teams": ["England", "Switzerland"]},
+        {"match_id": 3942551, "match_title": "netherlands_v_england", "label": "Netherlands 1-2 England (SF)", "stage": "Semi-finals", "date": "2024-07-10", "teams": ["Netherlands", "England"]},
+        # === FRANCE ===
+        {"match_id": 3942456, "match_title": "austria_v_france", "label": "Austria 0-1 France", "stage": "Group Stage", "date": "2024-06-17", "teams": ["Austria", "France"]},
+        {"match_id": 3942463, "match_title": "netherlands_v_france", "label": "Netherlands 0-0 France", "stage": "Group Stage", "date": "2024-06-21", "teams": ["Netherlands", "France"]},
+        {"match_id": 3942541, "match_title": "france_v_belgium", "label": "France 1-0 Belgium (R16)", "stage": "Round of 16", "date": "2024-07-01", "teams": ["France", "Belgium"]},
+        {"match_id": 3942547, "match_title": "portugal_v_france", "label": "Portugal 0-0 France (QF)", "stage": "Quarter-finals", "date": "2024-07-05", "teams": ["Portugal", "France"]},
+        # === GERMANY (Host) ===
+        {"match_id": 3942451, "match_title": "germany_v_scotland", "label": "Germany 5-1 Scotland", "stage": "Group Stage", "date": "2024-06-14", "teams": ["Germany", "Scotland"]},
+        {"match_id": 3942457, "match_title": "germany_v_hungary", "label": "Germany 2-0 Hungary", "stage": "Group Stage", "date": "2024-06-19", "teams": ["Germany", "Hungary"]},
+        {"match_id": 3942539, "match_title": "germany_v_denmark", "label": "Germany 2-0 Denmark (R16)", "stage": "Round of 16", "date": "2024-06-29", "teams": ["Germany", "Denmark"]},
+        # === PORTUGAL ===
+        {"match_id": 3942455, "match_title": "portugal_v_czechia", "label": "Portugal 2-1 Czechia", "stage": "Group Stage", "date": "2024-06-18", "teams": ["Portugal", "Czechia"]},
+        {"match_id": 3942462, "match_title": "turkey_v_portugal", "label": "Turkey 0-3 Portugal", "stage": "Group Stage", "date": "2024-06-22", "teams": ["Turkey", "Portugal"]},
+        {"match_id": 3942543, "match_title": "portugal_v_slovenia", "label": "Portugal 0-0 Slovenia (R16)", "stage": "Round of 16", "date": "2024-07-01", "teams": ["Portugal", "Slovenia"]},
+        # === NETHERLANDS ===
+        {"match_id": 3942452, "match_title": "poland_v_netherlands", "label": "Poland 1-2 Netherlands", "stage": "Group Stage", "date": "2024-06-16", "teams": ["Poland", "Netherlands"]},
+        {"match_id": 3942537, "match_title": "romania_v_netherlands", "label": "Romania 0-3 Netherlands (R16)", "stage": "Round of 16", "date": "2024-07-02", "teams": ["Romania", "Netherlands"]},
+        {"match_id": 3942550, "match_title": "netherlands_v_turkey", "label": "Netherlands 2-1 Turkey (QF)", "stage": "Quarter-finals", "date": "2024-07-06", "teams": ["Netherlands", "Turkey"]},
+        # === ITALY ===
+        {"match_id": 3942458, "match_title": "italy_v_albania", "label": "Italy 2-1 Albania", "stage": "Group Stage", "date": "2024-06-15", "teams": ["Italy", "Albania"]},
+        {"match_id": 3942535, "match_title": "switzerland_v_italy", "label": "Switzerland 2-0 Italy (R16)", "stage": "Round of 16", "date": "2024-06-29", "teams": ["Switzerland", "Italy"]},
+    ],
+    
+    # UEFA Euro 2020 - Key matches
+    "euro2020": [
+        # === ITALY (Winner) ===
+        {"match_id": 3788741, "match_title": "turkey_v_italy", "label": "Turkey 0-3 Italy", "stage": "Group Stage", "date": "2021-06-11", "teams": ["Turkey", "Italy"]},
+        {"match_id": 3788747, "match_title": "italy_v_switzerland", "label": "Italy 3-0 Switzerland", "stage": "Group Stage", "date": "2021-06-16", "teams": ["Italy", "Switzerland"]},
+        {"match_id": 3788771, "match_title": "italy_v_austria", "label": "Italy 2-1 Austria (R16)", "stage": "Round of 16", "date": "2021-06-26", "teams": ["Italy", "Austria"]},
+        {"match_id": 3788779, "match_title": "belgium_v_italy", "label": "Belgium 1-2 Italy (QF)", "stage": "Quarter-finals", "date": "2021-07-02", "teams": ["Belgium", "Italy"]},
+        {"match_id": 3788785, "match_title": "italy_v_spain", "label": "Italy 1-1 Spain (SF)", "stage": "Semi-finals", "date": "2021-07-06", "teams": ["Italy", "Spain"]},
+        {"match_id": 3788789, "match_title": "italy_v_england", "label": "Italy 1-1 England (Final)", "stage": "Final", "date": "2021-07-11", "teams": ["Italy", "England"]},
+        # === ENGLAND ===
+        {"match_id": 3788742, "match_title": "england_v_croatia", "label": "England 1-0 Croatia", "stage": "Group Stage", "date": "2021-06-13", "teams": ["England", "Croatia"]},
+        {"match_id": 3788748, "match_title": "england_v_scotland", "label": "England 0-0 Scotland", "stage": "Group Stage", "date": "2021-06-18", "teams": ["England", "Scotland"]},
+        {"match_id": 3788773, "match_title": "england_v_germany", "label": "England 2-0 Germany (R16)", "stage": "Round of 16", "date": "2021-06-29", "teams": ["England", "Germany"]},
+        {"match_id": 3788781, "match_title": "ukraine_v_england", "label": "Ukraine 0-4 England (QF)", "stage": "Quarter-finals", "date": "2021-07-03", "teams": ["Ukraine", "England"]},
+        {"match_id": 3788787, "match_title": "england_v_denmark", "label": "England 2-1 Denmark (SF)", "stage": "Semi-finals", "date": "2021-07-07", "teams": ["England", "Denmark"]},
+        # === SPAIN ===
+        {"match_id": 3788745, "match_title": "spain_v_sweden", "label": "Spain 0-0 Sweden", "stage": "Group Stage", "date": "2021-06-14", "teams": ["Spain", "Sweden"]},
+        {"match_id": 3788769, "match_title": "croatia_v_spain", "label": "Croatia 3-5 Spain (R16)", "stage": "Round of 16", "date": "2021-06-28", "teams": ["Croatia", "Spain"]},
+        {"match_id": 3788783, "match_title": "switzerland_v_spain", "label": "Switzerland 1-1 Spain (QF)", "stage": "Quarter-finals", "date": "2021-07-02", "teams": ["Switzerland", "Spain"]},
+        # === FRANCE ===
+        {"match_id": 3788746, "match_title": "france_v_germany", "label": "France 1-0 Germany", "stage": "Group Stage", "date": "2021-06-15", "teams": ["France", "Germany"]},
+        {"match_id": 3788751, "match_title": "hungary_v_france", "label": "Hungary 1-1 France", "stage": "Group Stage", "date": "2021-06-19", "teams": ["Hungary", "France"]},
+        {"match_id": 3788775, "match_title": "france_v_switzerland", "label": "France 3-3 Switzerland (R16)", "stage": "Round of 16", "date": "2021-06-28", "teams": ["France", "Switzerland"]},
+        # === GERMANY ===
+        {"match_id": 3788749, "match_title": "portugal_v_germany", "label": "Portugal 2-4 Germany", "stage": "Group Stage", "date": "2021-06-19", "teams": ["Portugal", "Germany"]},
+        # === PORTUGAL ===
+        {"match_id": 3788744, "match_title": "hungary_v_portugal", "label": "Hungary 0-3 Portugal", "stage": "Group Stage", "date": "2021-06-15", "teams": ["Hungary", "Portugal"]},
+        {"match_id": 3788777, "match_title": "belgium_v_portugal", "label": "Belgium 1-0 Portugal (R16)", "stage": "Round of 16", "date": "2021-06-27", "teams": ["Belgium", "Portugal"]},
+    ],
+    
+    # FIFA World Cup 2018 - Key matches
+    "wc2018": [
+        # === FRANCE (Winner) ===
+        {"match_id": 7581, "match_title": "france_v_australia_2018", "label": "France 2-1 Australia", "stage": "Group Stage", "date": "2018-06-16", "teams": ["France", "Australia"]},
+        {"match_id": 7545, "match_title": "france_v_peru", "label": "France 1-0 Peru", "stage": "Group Stage", "date": "2018-06-21", "teams": ["France", "Peru"]},
+        {"match_id": 8650, "match_title": "france_v_argentina_2018", "label": "France 4-3 Argentina (R16)", "stage": "Round of 16", "date": "2018-06-30", "teams": ["France", "Argentina"]},
+        {"match_id": 8656, "match_title": "uruguay_v_france", "label": "Uruguay 0-2 France (QF)", "stage": "Quarter-finals", "date": "2018-07-06", "teams": ["Uruguay", "France"]},
+        {"match_id": 8652, "match_title": "france_v_belgium", "label": "France 1-0 Belgium (SF)", "stage": "Semi-finals", "date": "2018-07-10", "teams": ["France", "Belgium"]},
+        {"match_id": 8658, "match_title": "france_v_croatia_2018", "label": "France 4-2 Croatia (Final)", "stage": "Final", "date": "2018-07-15", "teams": ["France", "Croatia"]},
+        # === CROATIA ===
+        {"match_id": 7569, "match_title": "croatia_v_nigeria", "label": "Croatia 2-0 Nigeria", "stage": "Group Stage", "date": "2018-06-16", "teams": ["Croatia", "Nigeria"]},
+        {"match_id": 7549, "match_title": "argentina_v_croatia", "label": "Argentina 0-3 Croatia", "stage": "Group Stage", "date": "2018-06-21", "teams": ["Argentina", "Croatia"]},
+        {"match_id": 8655, "match_title": "croatia_v_denmark", "label": "Croatia 1-1 Denmark (R16)", "stage": "Round of 16", "date": "2018-07-01", "teams": ["Croatia", "Denmark"]},
+        {"match_id": 8653, "match_title": "russia_v_croatia", "label": "Russia 2-2 Croatia (QF)", "stage": "Quarter-finals", "date": "2018-07-07", "teams": ["Russia", "Croatia"]},
+        {"match_id": 8657, "match_title": "croatia_v_england_2018", "label": "Croatia 2-1 England (SF)", "stage": "Semi-finals", "date": "2018-07-11", "teams": ["Croatia", "England"]},
+        # === BELGIUM ===
+        {"match_id": 7579, "match_title": "belgium_v_panama", "label": "Belgium 3-0 Panama", "stage": "Group Stage", "date": "2018-06-18", "teams": ["Belgium", "Panama"]},
+        {"match_id": 7547, "match_title": "belgium_v_tunisia", "label": "Belgium 5-2 Tunisia", "stage": "Group Stage", "date": "2018-06-23", "teams": ["Belgium", "Tunisia"]},
+        {"match_id": 8649, "match_title": "belgium_v_japan", "label": "Belgium 3-2 Japan (R16)", "stage": "Round of 16", "date": "2018-07-02", "teams": ["Belgium", "Japan"]},
+        {"match_id": 8654, "match_title": "brazil_v_belgium", "label": "Brazil 1-2 Belgium (QF)", "stage": "Quarter-finals", "date": "2018-07-06", "teams": ["Brazil", "Belgium"]},
+        # === ENGLAND ===
+        {"match_id": 7577, "match_title": "tunisia_v_england", "label": "Tunisia 1-2 England", "stage": "Group Stage", "date": "2018-06-18", "teams": ["Tunisia", "England"]},
+        {"match_id": 7543, "match_title": "england_v_panama", "label": "England 6-1 Panama", "stage": "Group Stage", "date": "2018-06-24", "teams": ["England", "Panama"]},
+        {"match_id": 8648, "match_title": "colombia_v_england", "label": "Colombia 1-1 England (R16)", "stage": "Round of 16", "date": "2018-07-03", "teams": ["Colombia", "England"]},
+        {"match_id": 8651, "match_title": "sweden_v_england", "label": "Sweden 0-2 England (QF)", "stage": "Quarter-finals", "date": "2018-07-07", "teams": ["Sweden", "England"]},
+        # === BRAZIL ===
+        {"match_id": 7575, "match_title": "brazil_v_switzerland", "label": "Brazil 1-1 Switzerland", "stage": "Group Stage", "date": "2018-06-17", "teams": ["Brazil", "Switzerland"]},
+        {"match_id": 7541, "match_title": "brazil_v_costa_rica", "label": "Brazil 2-0 Costa Rica", "stage": "Group Stage", "date": "2018-06-22", "teams": ["Brazil", "Costa Rica"]},
+        {"match_id": 8646, "match_title": "brazil_v_mexico", "label": "Brazil 2-0 Mexico (R16)", "stage": "Round of 16", "date": "2018-07-02", "teams": ["Brazil", "Mexico"]},
+        # === ARGENTINA ===
+        {"match_id": 7567, "match_title": "argentina_v_iceland", "label": "Argentina 1-1 Iceland", "stage": "Group Stage", "date": "2018-06-16", "teams": ["Argentina", "Iceland"]},
+        {"match_id": 7529, "match_title": "nigeria_v_argentina", "label": "Nigeria 1-2 Argentina", "stage": "Group Stage", "date": "2018-06-26", "teams": ["Nigeria", "Argentina"]},
+        # === GERMANY ===
+        {"match_id": 7573, "match_title": "germany_v_mexico_2018", "label": "Germany 0-1 Mexico", "stage": "Group Stage", "date": "2018-06-17", "teams": ["Germany", "Mexico"]},
+        {"match_id": 7539, "match_title": "germany_v_sweden", "label": "Germany 2-1 Sweden", "stage": "Group Stage", "date": "2018-06-23", "teams": ["Germany", "Sweden"]},
+        {"match_id": 7527, "match_title": "south_korea_v_germany", "label": "South Korea 2-0 Germany", "stage": "Group Stage", "date": "2018-06-27", "teams": ["South Korea", "Germany"]},
+        # === SPAIN ===
+        {"match_id": 7565, "match_title": "portugal_v_spain_2018", "label": "Portugal 3-3 Spain", "stage": "Group Stage", "date": "2018-06-15", "teams": ["Portugal", "Spain"]},
+        {"match_id": 8644, "match_title": "spain_v_russia", "label": "Spain 1-1 Russia (R16)", "stage": "Round of 16", "date": "2018-07-01", "teams": ["Spain", "Russia"]},
+    ],
+    
+    # Copa America 2024 - Key matches
+    "copa2024": [
+        # === ARGENTINA (Winner) ===
+        {"match_id": 3943043, "match_title": "argentina_v_canada_copa", "label": "Argentina 2-0 Canada", "stage": "Group Stage", "date": "2024-06-20", "teams": ["Argentina", "Canada"]},
+        {"match_id": 3943049, "match_title": "chile_v_argentina", "label": "Chile 0-1 Argentina", "stage": "Group Stage", "date": "2024-06-25", "teams": ["Chile", "Argentina"]},
+        {"match_id": 3943077, "match_title": "argentina_v_ecuador_copa", "label": "Argentina 1-1 Ecuador (QF)", "stage": "Quarter-finals", "date": "2024-07-04", "teams": ["Argentina", "Ecuador"]},
+        {"match_id": 3943081, "match_title": "argentina_v_canada_sf", "label": "Argentina 2-0 Canada (SF)", "stage": "Semi-finals", "date": "2024-07-09", "teams": ["Argentina", "Canada"]},
+        {"match_id": 3943085, "match_title": "argentina_v_colombia_final", "label": "Argentina 1-0 Colombia (Final)", "stage": "Final", "date": "2024-07-14", "teams": ["Argentina", "Colombia"]},
+        # === COLOMBIA ===
+        {"match_id": 3943045, "match_title": "colombia_v_paraguay", "label": "Colombia 2-1 Paraguay", "stage": "Group Stage", "date": "2024-06-24", "teams": ["Colombia", "Paraguay"]},
+        {"match_id": 3943051, "match_title": "colombia_v_costa_rica", "label": "Colombia 3-0 Costa Rica", "stage": "Group Stage", "date": "2024-06-28", "teams": ["Colombia", "Costa Rica"]},
+        {"match_id": 3943079, "match_title": "colombia_v_panama", "label": "Colombia 5-0 Panama (QF)", "stage": "Quarter-finals", "date": "2024-07-06", "teams": ["Colombia", "Panama"]},
+        {"match_id": 3943083, "match_title": "uruguay_v_colombia", "label": "Uruguay 0-1 Colombia (SF)", "stage": "Semi-finals", "date": "2024-07-10", "teams": ["Uruguay", "Colombia"]},
+        # === URUGUAY ===
+        {"match_id": 3943047, "match_title": "uruguay_v_panama", "label": "Uruguay 3-1 Panama", "stage": "Group Stage", "date": "2024-06-23", "teams": ["Uruguay", "Panama"]},
+        {"match_id": 3943053, "match_title": "uruguay_v_usa", "label": "Uruguay 1-0 USA", "stage": "Group Stage", "date": "2024-07-01", "teams": ["Uruguay", "United States"]},
+        {"match_id": 3943075, "match_title": "uruguay_v_brazil_copa", "label": "Uruguay 0-0 Brazil (QF)", "stage": "Quarter-finals", "date": "2024-07-06", "teams": ["Uruguay", "Brazil"]},
+        # === BRAZIL ===
+        {"match_id": 3943044, "match_title": "brazil_v_costa_rica_copa", "label": "Brazil 0-0 Costa Rica", "stage": "Group Stage", "date": "2024-06-24", "teams": ["Brazil", "Costa Rica"]},
+        {"match_id": 3943050, "match_title": "brazil_v_paraguay_copa", "label": "Brazil 4-1 Paraguay", "stage": "Group Stage", "date": "2024-06-28", "teams": ["Brazil", "Paraguay"]},
+    ],
+}
+
+# Backwards compatibility - default to World Cup 2022
+WORLD_CUP_MATCHES = COMPETITION_MATCHES["wc2022"]
+
+# Get unique teams for a competition
+def get_teams_for_competition(comp_id: str) -> list:
+    matches = COMPETITION_MATCHES.get(comp_id, [])
+    return sorted(set(team for m in matches for team in m.get("teams", [])))
+
+# Get unique teams across all competitions (for backwards compatibility)
+ALL_TEAMS = sorted(set(team for matches in COMPETITION_MATCHES.values() for m in matches for team in m.get("teams", [])))
 
 # FIFA+ Base URL (manual scrubbing required - no timestamp parameters supported)
 FIFA_PLUS_BASE_URL = "https://www.fifa.com/fifaplus/en/watch/7CPdFjceNZkadrQkHj85l4"
@@ -1905,32 +2148,85 @@ async def get_team_stats(match_id: int = None, team: str = None):
 
 
 @app.get("/api/matches")
-async def get_matches():
-    """Get list of available World Cup 2022 matches."""
-    return {
-        "matches": [
-            {
-                "match_id": m["match_id"], 
-                "label": m["label"], 
-                "stage": m["stage"],
-                "date": m.get("date")
-            }
-            for m in WORLD_CUP_MATCHES
-        ]
-    }
+async def get_matches(include_uncached: bool = False):
+    """Get list of available World Cup 2022 matches. By default only returns cached matches."""
+    from ultils.match_loader import DATA_DIR
+    
+    matches = []
+    for m in WORLD_CUP_MATCHES:
+        match_id = m["match_id"]
+        match_title = m["match_title"]
+        
+        # Check if cached
+        events_file = os.path.join(DATA_DIR, f"match_{match_title}_events_{match_id}.json")
+        lineups_file = os.path.join(DATA_DIR, f"match_{match_title}_lineups_{match_id}.json")
+        is_cached = os.path.exists(events_file) and os.path.exists(lineups_file)
+        
+        # Skip uncached matches unless explicitly requested
+        if not include_uncached and not is_cached:
+            continue
+        
+        matches.append({
+            "match_id": m["match_id"], 
+            "label": m["label"], 
+            "stage": m["stage"],
+            "date": m.get("date"),
+            "teams": m.get("teams", []),
+            "is_cached": is_cached
+        })
+    
+    return {"matches": matches}
 
 
 # ============================================
 # DATA MANAGEMENT ENDPOINTS
 # ============================================
 
+@app.get("/api/data/competitions")
+async def get_competitions():
+    """Get list of available competitions."""
+    return {
+        "competitions": [
+            {
+                "id": comp["id"],
+                "name": comp["name"],
+                "short_name": comp["short_name"],
+                "year": comp["year"],
+                "country": comp["country"],
+                "match_count": len(COMPETITION_MATCHES.get(comp["id"], []))
+            }
+            for comp in COMPETITIONS.values()
+        ],
+        "default": DEFAULT_COMPETITION
+    }
+
+
+@app.get("/api/data/teams")
+async def get_teams(competition: str = None):
+    """Get list of teams available in a competition."""
+    if competition and competition in COMPETITION_MATCHES:
+        teams = get_teams_for_competition(competition)
+    else:
+        teams = ALL_TEAMS
+    return {"teams": teams, "competition": competition}
+
+
 @app.get("/api/data/status")
-async def get_data_status():
-    """Get status of cached match data - which matches have data available."""
+async def get_data_status(competition: str = None, team: str = None):
+    """Get status of cached match data for a competition."""
     from ultils.match_loader import DATA_DIR
     
+    # Default to wc2022 if no competition specified
+    comp_id = competition if competition and competition in COMPETITION_MATCHES else DEFAULT_COMPETITION
+    matches = COMPETITION_MATCHES.get(comp_id, [])
+    comp_info = COMPETITIONS.get(comp_id, {})
+    
     statuses = []
-    for m in WORLD_CUP_MATCHES:
+    for m in matches:
+        # Filter by team if specified
+        if team and team not in m.get("teams", []):
+            continue
+            
         match_id = m["match_id"]
         match_title = m["match_title"]
         
@@ -1950,6 +2246,7 @@ async def get_data_status():
             "label": m["label"],
             "stage": m["stage"],
             "date": m.get("date"),
+            "teams": m.get("teams", []),
             "has_events": has_events,
             "has_lineups": has_lineups,
             "is_complete": has_events and has_lineups,
@@ -1961,16 +2258,19 @@ async def get_data_status():
     total_cached = sum(1 for s in statuses if s["is_complete"])
     
     return {
-        "total_matches": len(WORLD_CUP_MATCHES),
+        "competition": comp_id,
+        "competition_name": comp_info.get("name", ""),
+        "total_matches": len(statuses),
         "cached_matches": total_cached,
-        "missing_matches": len(WORLD_CUP_MATCHES) - total_cached,
+        "missing_matches": len(statuses) - total_cached,
         "statsbomb_available": HAS_STATSBOMB,
+        "all_teams": get_teams_for_competition(comp_id),
         "matches": statuses
     }
 
 
 @app.post("/api/data/fetch/{match_id}")
-async def fetch_match_data(match_id: int):
+async def fetch_match_data(match_id: int, competition: str = None):
     """Fetch match data from StatsBomb and cache it locally."""
     if not HAS_STATSBOMB:
         raise HTTPException(
@@ -1978,8 +2278,17 @@ async def fetch_match_data(match_id: int):
             detail="statsbombpy not installed. Install with: pip install statsbombpy"
         )
     
-    # Find match config
-    match_config = next((m for m in WORLD_CUP_MATCHES if m["match_id"] == match_id), None)
+    # Find match config across all competitions or specific one
+    match_config = None
+    if competition and competition in COMPETITION_MATCHES:
+        match_config = next((m for m in COMPETITION_MATCHES[competition] if m["match_id"] == match_id), None)
+    else:
+        # Search all competitions
+        for matches in COMPETITION_MATCHES.values():
+            match_config = next((m for m in matches if m["match_id"] == match_id), None)
+            if match_config:
+                break
+    
     if not match_config:
         raise HTTPException(status_code=404, detail=f"Match {match_id} not in configured matches")
     
@@ -2011,12 +2320,20 @@ async def fetch_match_data(match_id: int):
 
 
 @app.delete("/api/data/delete/{match_id}")
-async def delete_match_data(match_id: int):
+async def delete_match_data(match_id: int, competition: str = None):
     """Delete cached match data."""
     from ultils.match_loader import DATA_DIR
     
-    # Find match config
-    match_config = next((m for m in WORLD_CUP_MATCHES if m["match_id"] == match_id), None)
+    # Find match config across all competitions
+    match_config = None
+    if competition and competition in COMPETITION_MATCHES:
+        match_config = next((m for m in COMPETITION_MATCHES[competition] if m["match_id"] == match_id), None)
+    else:
+        for matches in COMPETITION_MATCHES.values():
+            match_config = next((m for m in matches if m["match_id"] == match_id), None)
+            if match_config:
+                break
+    
     if not match_config:
         raise HTTPException(status_code=404, detail=f"Match {match_id} not in configured matches")
     

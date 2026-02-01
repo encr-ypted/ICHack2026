@@ -12,6 +12,9 @@ const emit = defineEmits<{
 
 const { isDarkMode, toggleTheme } = useTheme();
 
+// Data Manager Modal
+const showDataManager = ref(false);
+
 // ============================================
 // API CONFIGURATION
 // ============================================
@@ -558,6 +561,18 @@ onMounted(() => {
                   {{ m.date ? `${m.date.split('-').slice(1).join('/')} - ` : '' }}{{ m.label }}
                 </option>
               </select>
+              <button
+                @click="showDataManager = true"
+                :class="cn(
+                  'p-2 rounded-lg border transition-colors',
+                  isDarkMode
+                    ? 'border-purple-500/30 hover:bg-purple-500/20 text-purple-400'
+                    : 'border-purple-300 hover:bg-purple-50 text-purple-600'
+                )"
+                title="Manage Match Database"
+              >
+                <Icon name="lucide:database" class="w-4 h-4" />
+              </button>
             </div>
 
             <div class="flex items-center gap-2">
@@ -1777,23 +1792,6 @@ onMounted(() => {
           />
         </UiCard>
 
-        <!-- Data Manager -->
-        <UiCard
-          :class="
-            cn(
-              'p-6',
-              isDarkMode
-                ? 'bg-[#12141f] border-purple-500/30'
-                : 'bg-white border-purple-300'
-            )
-          "
-        >
-          <DataManager
-            :isDarkMode="isDarkMode"
-            @dataChanged="fetchMatches"
-          />
-        </UiCard>
-
         <!-- Security Badge -->
         <UiCard
           :class="
@@ -1931,5 +1929,12 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Data Manager Modal -->
+    <DataManager
+      :isOpen="showDataManager"
+      :isDarkMode="isDarkMode"
+      @close="showDataManager = false"
+      @dataChanged="fetchMatches"
+    />
   </div>
 </template>

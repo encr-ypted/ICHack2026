@@ -70,7 +70,12 @@ function formatStat(val: any, suffix = '') {
         <label :class="cn('text-xs font-medium mb-1 block', isDarkMode ? 'text-white/70' : 'text-gray-600')">Player 1</label>
         <select
           v-model="player1Id"
-          :class="cn('w-full px-3 py-2 rounded-lg text-sm', isDarkMode ? 'bg-white/10 text-white border-white/20' : 'bg-white border-gray-300 border')"
+          :class="cn(
+            'w-full px-3 py-2 rounded-lg text-sm border',
+            isDarkMode
+              ? 'bg-[#0a0b14] text-white border-white/20 focus:border-orange-500/50'
+              : 'bg-white text-gray-900 border-gray-300'
+          )"
         >
           <option :value="null" disabled>Select player...</option>
           <optgroup v-for="(teamPlayers, team) in playersByTeam" :key="team" :label="team">
@@ -84,7 +89,12 @@ function formatStat(val: any, suffix = '') {
         <label :class="cn('text-xs font-medium mb-1 block', isDarkMode ? 'text-white/70' : 'text-gray-600')">Player 2</label>
         <select
           v-model="player2Id"
-          :class="cn('w-full px-3 py-2 rounded-lg text-sm', isDarkMode ? 'bg-white/10 text-white border-white/20' : 'bg-white border-gray-300 border')"
+          :class="cn(
+            'w-full px-3 py-2 rounded-lg text-sm border',
+            isDarkMode
+              ? 'bg-[#0a0b14] text-white border-white/20 focus:border-orange-500/50'
+              : 'bg-white text-gray-900 border-gray-300'
+          )"
         >
           <option :value="null" disabled>Select player...</option>
           <optgroup v-for="(teamPlayers, team) in playersByTeam" :key="team" :label="team">
