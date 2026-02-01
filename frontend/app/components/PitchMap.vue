@@ -228,6 +228,7 @@ function getHeatColor(type: string) {
 
       <!-- Active action: movement (pass/carry) -->
       <g v-if="hasMovement && activeAction?.start_coords && activeAction?.end_coords" filter="url(#glow)">
+        <!-- Glow line -->
         <line
           :x1="activeAction.start_coords[0]"
           :y1="activeAction.start_coords[1]"
@@ -237,6 +238,7 @@ function getHeatColor(type: string) {
           stroke-width="2"
           opacity="0.3"
         />
+        <!-- Main line -->
         <line
           :x1="activeAction.start_coords[0]"
           :y1="activeAction.start_coords[1]"
@@ -245,13 +247,27 @@ function getHeatColor(type: string) {
           :stroke="actionColor"
           stroke-width="0.8"
           :stroke-dasharray="isSuccess ? 'none' : '2,1'"
-          :marker-end="'url(#' + arrowId + ')'"
+          :marker-end="isSuccess ? 'url(#' + arrowId + ')' : ''"
         />
+        <!-- Start point -->
         <circle :cx="activeAction.start_coords[0]" :cy="activeAction.start_coords[1]" r="3" :fill="actionColor" fill-opacity="0.3" />
         <circle :cx="activeAction.start_coords[0]" :cy="activeAction.start_coords[1]" r="2" :fill="actionColor" />
-        <circle :cx="activeAction.end_coords[0]" :cy="activeAction.end_coords[1]" r="1.5" :fill="actionColor" :stroke="isDarkMode ? '#fff' : '#000'" stroke-width="0.3" />
+        <!-- End point: checkmark for success, X for failure -->
+        <g v-if="isSuccess">
+          <circle :cx="activeAction.end_coords[0]" :cy="activeAction.end_coords[1]" r="1.5" :fill="actionColor" :stroke="isDarkMode ? '#fff' : '#000'" stroke-width="0.3" />
+        </g>
+        <g v-else>
+          <!-- X marker for failed pass -->
+          <circle :cx="activeAction.end_coords[0]" :cy="activeAction.end_coords[1]" r="2.5" fill="#ef4444" fill-opacity="0.3" />
+          <line :x1="activeAction.end_coords[0]-1.5" :y1="activeAction.end_coords[1]-1.5" :x2="activeAction.end_coords[0]+1.5" :y2="activeAction.end_coords[1]+1.5" stroke="#ef4444" stroke-width="0.6" />
+          <line :x1="activeAction.end_coords[0]+1.5" :y1="activeAction.end_coords[1]-1.5" :x2="activeAction.end_coords[0]-1.5" :y2="activeAction.end_coords[1]+1.5" stroke="#ef4444" stroke-width="0.6" />
+        </g>
+        <!-- Player name label -->
         <rect :x="activeAction.start_coords[0]-10" :y="activeAction.start_coords[1]-7" width="20" height="4" :fill="isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)'" rx="1" />
         <text :x="activeAction.start_coords[0]" :y="activeAction.start_coords[1]-4" font-size="2.5" :fill="isDarkMode ? '#fff' : '#1f2937'" text-anchor="middle" font-weight="600">{{ activeAction.player_name || '' }}</text>
+        <!-- Outcome label at end point -->
+        <rect :x="activeAction.end_coords[0]-8" :y="activeAction.end_coords[1]+3" width="16" height="3.5" :fill="isSuccess ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.9)'" rx="0.5" />
+        <text :x="activeAction.end_coords[0]" :y="activeAction.end_coords[1]+5.2" font-size="2" fill="#fff" text-anchor="middle" font-weight="600">{{ isSuccess ? 'COMPLETE' : 'INCOMPLETE' }}</text>
       </g>
 
       <!-- Active action: point (shot/defense/dribble/other) -->

@@ -307,7 +307,12 @@ async function fetchPlayerAnalysis(playerName: string, playerId?: number) {
     // Set first highlight/lowlight as active on map, or clear if none
     const firstMoment = data.top_highlights?.[0] || data.areas_for_improvement?.[0];
     if (firstMoment) {
-      activeHighlightVizData.value = firstMoment.pitch_viz_data || makeFallbackVizData(firstMoment);
+      let viz = firstMoment.pitch_viz_data || makeFallbackVizData(firstMoment);
+      // Ensure outcome is lowercase for consistent comparison
+      if (viz && viz.outcome) {
+        viz = { ...viz, outcome: viz.outcome.toLowerCase() as any };
+      }
+      activeHighlightVizData.value = viz;
     } else {
       activeHighlightVizData.value = null;
     }
@@ -322,21 +327,27 @@ async function fetchPlayerAnalysis(playerName: string, playerId?: number) {
 
 // Show action on the pitch map
 // Create fallback pitch_viz_data when API doesn't provide it (from allPositions or moment index)
-function makeFallbackVizData(moment: Moment): PitchVizData {
+function makeFallbackVizData(moment: Moment & { impact?: string }): PitchVizData {
   const positions = allPositions.value;
   const idx = (moment.minute || 0) % Math.max(1, positions.length);
   const pos = positions[idx] || { x: 60, y: 40, type: "Pass" };
+  // Use impact if available (from criticalMoments), otherwise use highlight_score
+  const isPositive = moment.impact === "positive" || (moment.highlight_score > 0);
   return {
     action_type: "other",
     player_name: moment.event_type || "Action",
     coords: [pos.x, pos.y],
-    outcome: moment.impact === "positive" ? "complete" : "incomplete",
-    team_color: moment.impact === "positive" ? "#22c55e" : "#f59e0b",
+    outcome: isPositive ? "complete" : "incomplete",
+    team_color: isPositive ? "#22c55e" : "#ef4444",
   };
 }
 
-const showOnMap = (moment: Moment) => {
-  const viz = moment.pitch_viz_data || makeFallbackVizData(moment);
+const showOnMap = (moment: Moment & { impact?: string }) => {
+  let viz = moment.pitch_viz_data || makeFallbackVizData(moment);
+  // Ensure outcome is always lowercase for consistent comparison
+  if (viz && viz.outcome) {
+    viz = { ...viz, outcome: viz.outcome.toLowerCase() as any };
+  }
   activeHighlightVizData.value = viz;
 };
 
