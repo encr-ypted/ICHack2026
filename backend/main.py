@@ -117,6 +117,121 @@ def calculate_xt_delta(start_loc: list, end_loc: list) -> float:
     return float(XT_GRID[e_row][e_col] - XT_GRID[s_row][s_col])
 
 
+def compute_advanced_analytics(player_events: list, team_name: str, home_team: str = "Argentina") -> dict:
+    """
+    Compute advanced metrics from player events.
+    - Progressive passes: pass advances ball ≥15m toward opponent goal
+    - Passes into final third: end_location x ≥ 80 (attacking right)
+    - Passes into box: end_location in penalty area
+    - Total xT: sum of xT delta from all passes/carries
+    - Actions under pressure: count and success rate
+    - Through balls: pass type indicates through ball
+    - Key passes: through balls + passes into box
+    """
+    # StatsBomb: home team attacks toward x=120, away team toward x=0
+    is_attacking_right = (team_name == home_team)
+
+    def is_progressive_pass(event: dict) -> bool:
+        loc = event.get("location")
+        end = event.get("pass", {}).get("end_location")
+        if not loc or not end:
+            return False
+        dx = end[0] - loc[0]
+        return dx >= 15 if is_attacking_right else dx <= -15
+
+    def is_pass_into_final_third(event: dict) -> bool:
+        end = event.get("pass", {}).get("end_location")
+        if not end:
+            return False
+        return end[0] >= 80 if is_attacking_right else end[0] <= 40
+
+    def is_pass_into_box(event: dict) -> bool:
+        end = event.get("pass", {}).get("end_location")
+        if not end:
+            return False
+        if is_attacking_right:
+            return end[0] >= 102 and 18 <= end[1] <= 62
+        return end[0] <= 18 and 18 <= end[1] <= 62
+
+    def is_through_ball(event: dict) -> bool:
+        pt = event.get("pass", {}).get("type", {})
+        name = (pt.get("name") or "") if isinstance(pt, dict) else str(pt)
+        return "through" in name.lower()
+
+    total_xt = 0.0
+    progressive_passes = 0
+    progressive_complete = 0
+    passes_into_final_third = 0
+    passes_into_box = 0
+    through_balls = 0
+    key_passes = 0
+    actions_under_pressure = 0
+    pressure_success = 0
+
+    for event in player_events:
+        loc = event.get("location")
+        event_type = event.get("type", {}).get("name", "")
+        under_pressure = event.get("under_pressure", False)
+
+        if under_pressure:
+            actions_under_pressure += 1
+            success = False
+            if event_type == "Pass":
+                success = "outcome" not in event.get("pass", {})
+            elif event_type == "Carry":
+                success = "outcome" not in event.get("carry", {})
+            elif event_type == "Dribble":
+                outcome = event.get("dribble", {}).get("outcome", {}).get("name", "")
+                success = outcome == "Complete"
+            else:
+                success = True
+            if success:
+                pressure_success += 1
+
+        if event_type == "Pass" and loc:
+            pass_data = event.get("pass", {})
+            end_loc = pass_data.get("end_location")
+            if end_loc:
+                total_xt += calculate_xt_delta(loc, end_loc)
+            complete = "outcome" not in pass_data
+            if is_progressive_pass(event):
+                progressive_passes += 1
+                if complete:
+                    progressive_complete += 1
+            if is_pass_into_final_third(event):
+                passes_into_final_third += 1
+            if is_pass_into_box(event):
+                passes_into_box += 1
+            if is_through_ball(event):
+                through_balls += 1
+            if is_through_ball(event) or is_pass_into_box(event):
+                key_passes += 1
+
+        if event_type == "Carry" and loc:
+            end_loc = event.get("carry", {}).get("end_location")
+            if end_loc:
+                total_xt += calculate_xt_delta(loc, end_loc)
+                dx = end_loc[0] - loc[0]
+                if (is_attacking_right and dx >= 15) or (not is_attacking_right and dx <= -15):
+                    progressive_passes += 1
+                    progressive_complete += 1
+
+    pressure_pct = round(pressure_success / actions_under_pressure * 100) if actions_under_pressure > 0 else None
+    prog_acc = round(progressive_complete / progressive_passes * 100) if progressive_passes > 0 else None
+
+    return {
+        "total_xt": round(total_xt, 3),
+        "progressive_passes": progressive_passes,
+        "progressive_pass_accuracy": f"{prog_acc}%" if prog_acc is not None else "N/A",
+        "passes_into_final_third": passes_into_final_third,
+        "passes_into_box": passes_into_box,
+        "through_balls": through_balls,
+        "key_passes": key_passes,
+        "actions_under_pressure": actions_under_pressure,
+        "pressure_success_pct": f"{pressure_pct}%" if pressure_pct is not None else "N/A",
+    }
+
+
 # --- FEATURE ENGINEERING (The Transformer) ---
 def extract_features(event: dict, model_type: str) -> Optional[pd.DataFrame]:
     """
@@ -704,6 +819,15 @@ def get_player_data(
             "pass_accuracy": "N/A",
             "shots": 0,
             "goals": 0,
+            "total_xt": 0.0,
+            "progressive_passes": 0,
+            "progressive_pass_accuracy": "N/A",
+            "passes_into_final_third": 0,
+            "passes_into_box": 0,
+            "through_balls": 0,
+            "key_passes": 0,
+            "actions_under_pressure": 0,
+            "pressure_success_pct": "N/A",
         }
         return {"error": f"Player '{player_name}' not found", "player_did_not_play": True, **empty_stats}, [], []
     
@@ -785,7 +909,11 @@ def get_player_data(
     complete_passes = [p for p in pass_events if "outcome" not in p.get("pass", {})]
     shot_events = [e for e in player_events if e["type"]["name"] == "Shot"]
     goals = [s for s in shot_events if s.get("shot", {}).get("outcome", {}).get("name") == "Goal"]
-    
+    player_team = player_events[0].get("team", {}).get("name", home_team) if player_events else home_team
+
+    # Advanced analytics
+    advanced = compute_advanced_analytics(player_events, player_team, home_team)
+
     stats = {
         "name": player_name,
         "total_highlight_score": round(total_highlight_score, 2),
@@ -796,7 +924,7 @@ def get_player_data(
         "highlights_count": len(highlights),
         "lowlights_count": len(lowlights),
         "pass_accuracy": (
-            f"{int(len(complete_passes) / len(pass_events) * 100)}%" 
+            f"{int(len(complete_passes) / len(pass_events) * 100)}%"
             if pass_events else "N/A"
         ),
         "shots": len(shot_events),
@@ -805,7 +933,8 @@ def get_player_data(
             "pass_model": ML_MODELS.get("pass") is not None,
             "shot_model": ML_MODELS.get("shot") is not None,
             "win_model": ML_MODELS.get("win") is not None
-        }
+        },
+        **advanced,
     }
     
     return stats, top_highlights, areas_for_improvement
@@ -1166,6 +1295,20 @@ def generate_player_summary(
         what_went_well.append(f"More positive than negative actions ({pos} vs {neg})")
     if net > 0.5:
         what_went_well.append("Positive net impact on the match")
+    total_xt = stats.get("total_xt", 0) or 0
+    if total_xt > 0.05:
+        what_went_well.append(f"Generated {total_xt:.2f} xT through ball progression")
+    prog = stats.get("progressive_passes", 0) or 0
+    if prog >= 5:
+        what_went_well.append(f"{prog} progressive passes advancing the ball")
+    key_p = stats.get("key_passes", 0) or 0
+    if key_p >= 2:
+        what_went_well.append(f"{key_p} key passes creating danger")
+    pressure_pct = stats.get("pressure_success_pct", "N/A")
+    if pressure_pct != "N/A" and pressure_pct:
+        pct_val = int(str(pressure_pct).replace("%", "")) if "%" in str(pressure_pct) else 0
+        if pct_val >= 75 and (stats.get("actions_under_pressure") or 0) >= 3:
+            what_went_well.append(f"Composed under pressure ({pressure_pct})")
     for i, h in enumerate(top_highlights[:3]):
         what_went_well.append(h.get("description", f"Key contribution at {h.get('time_display', '')}"))
     if not what_went_well:
@@ -1182,6 +1325,17 @@ def generate_player_summary(
         pct = int(pass_acc.replace("%", "")) if "%" in str(pass_acc) else 0
         if pct < 70 and "passing" not in " ".join(what_to_work_on).lower():
             what_to_work_on.append(f"Improve pass accuracy (current: {pass_acc})")
+    prog_acc = stats.get("progressive_pass_accuracy", "N/A")
+    if prog_acc != "N/A" and "%" in str(prog_acc):
+        pa = int(str(prog_acc).replace("%", ""))
+        if pa < 70 and (stats.get("progressive_passes") or 0) >= 3:
+            what_to_work_on.append("Improve accuracy of progressive passes")
+    if (stats.get("actions_under_pressure") or 0) >= 5:
+        pp = stats.get("pressure_success_pct", "N/A")
+        if pp != "N/A":
+            pv = int(str(pp).replace("%", "")) if "%" in str(pp) else 100
+            if pv < 60:
+                what_to_work_on.append("Improve decision-making when under pressure")
     if not what_to_work_on:
         what_to_work_on.append("Maintain consistency and build on strengths")
 
@@ -1544,6 +1698,198 @@ async def root():
         "version": "1.0.0",
         "matches_available": len(WORLD_CUP_MATCHES)
     }
+
+
+# Position ID to pitch coordinates mapping (StatsBomb position IDs)
+# Coordinates are for team attacking left-to-right (x: 0-120, y: 0-80)
+POSITION_COORDS = {
+    1: (6, 40),      # Goalkeeper
+    2: (25, 8),      # Right Back
+    3: (18, 24),     # Right Center Back
+    4: (18, 40),     # Center Back
+    5: (18, 56),     # Left Center Back
+    6: (25, 72),     # Left Back
+    7: (35, 8),      # Right Wing Back
+    8: (35, 72),     # Left Wing Back
+    9: (40, 24),     # Right Defensive Midfield
+    10: (40, 40),    # Center Defensive Midfield
+    11: (40, 56),    # Left Defensive Midfield
+    12: (55, 16),    # Right Midfield
+    13: (55, 32),    # Right Center Midfield
+    14: (55, 40),    # Center Midfield
+    15: (55, 48),    # Left Center Midfield
+    16: (55, 64),    # Left Midfield
+    17: (70, 12),    # Right Wing
+    18: (70, 28),    # Right Attacking Midfield
+    19: (70, 40),    # Center Attacking Midfield
+    20: (70, 52),    # Left Attacking Midfield
+    21: (70, 68),    # Left Wing
+    22: (85, 28),    # Right Center Forward
+    23: (85, 40),    # Center Forward / Striker
+    24: (85, 52),    # Left Center Forward
+    25: (90, 40),    # Secondary Striker
+}
+
+
+def get_formation_positions(events: dict, team_name: str) -> list:
+    """
+    Extract starting formation positions for a team from Starting XI event.
+    Returns list of {player_name, short_name, jersey_number, position_name, x, y}.
+    """
+    # Find Starting XI event for the team
+    for event in events.values():
+        if event.get("type", {}).get("name") == "Starting XI" and event.get("team", {}).get("name") == team_name:
+            tactics = event.get("tactics", {})
+            lineup = tactics.get("lineup", [])
+            formation_str = str(tactics.get("formation", ""))
+            
+            positions = []
+            for player_data in lineup:
+                player = player_data.get("player", {})
+                position = player_data.get("position", {})
+                position_id = position.get("id", 23)  # Default to striker
+                position_name = position.get("name", "Unknown")
+                
+                # Get coordinates from mapping
+                coords = POSITION_COORDS.get(position_id, (60, 40))
+                
+                # Get short name (last name or first 10 chars)
+                full_name = player.get("name", "Unknown")
+                parts = full_name.split()
+                short_name = parts[-1] if len(parts) > 1 else full_name[:10]
+                
+                positions.append({
+                    "player_id": player.get("id"),
+                    "player_name": full_name,
+                    "short_name": short_name,
+                    "jersey_number": player_data.get("jersey_number", 0),
+                    "position_id": position_id,
+                    "position_name": position_name,
+                    "x": coords[0],
+                    "y": coords[1],
+                })
+            
+            return positions
+    
+    return []
+
+
+@app.get("/api/formation")
+async def get_formation(match_id: int = None, team: str = None):
+    """Get starting formation positions for a team in a match."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        
+        teams = list(lineups.keys()) if lineups else []
+        if not team and teams:
+            team = teams[0]
+        
+        formation = get_formation_positions(events, team)
+        
+        # Get formation number from Starting XI
+        formation_num = None
+        for event in events.values():
+            if event.get("type", {}).get("name") == "Starting XI" and event.get("team", {}).get("name") == team:
+                formation_num = event.get("tactics", {}).get("formation")
+                break
+        
+        return {
+            "match_id": config["match_id"],
+            "team": team,
+            "formation": formation_num,
+            "players": formation,
+            "teams": teams,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/team/stats")
+async def get_team_stats(match_id: int = None, team: str = None):
+    """Get aggregated team statistics from a match."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        
+        teams = list(lineups.keys()) if lineups else []
+        if not team and teams:
+            team = teams[0]
+        
+        events_list = list(events.values())
+        team_events = [e for e in events_list if e.get("team", {}).get("name") == team]
+        
+        # Basic counts
+        passes = [e for e in team_events if e.get("type", {}).get("name") == "Pass"]
+        complete_passes = [p for p in passes if "outcome" not in p.get("pass", {})]
+        shots = [e for e in team_events if e.get("type", {}).get("name") == "Shot"]
+        goals = [s for s in shots if s.get("shot", {}).get("outcome", {}).get("name") == "Goal"]
+        
+        # Advanced: xT, progressive passes, etc.
+        total_xt = 0.0
+        progressive_passes = 0
+        passes_into_box = 0
+        key_passes = 0
+        
+        for event in team_events:
+            loc = event.get("location")
+            event_type = event.get("type", {}).get("name", "")
+            
+            if event_type == "Pass" and loc:
+                pass_data = event.get("pass", {})
+                end_loc = pass_data.get("end_location")
+                if end_loc:
+                    total_xt += calculate_xt_delta(loc, end_loc)
+                    dx = end_loc[0] - loc[0]
+                    if dx >= 15:
+                        progressive_passes += 1
+                    if end_loc[0] >= 102 and 18 <= end_loc[1] <= 62:
+                        passes_into_box += 1
+                        key_passes += 1
+                    pt = pass_data.get("type", {})
+                    if isinstance(pt, dict) and "through" in (pt.get("name") or "").lower():
+                        key_passes += 1
+            
+            if event_type == "Carry" and loc:
+                end_loc = event.get("carry", {}).get("end_location")
+                if end_loc:
+                    total_xt += calculate_xt_delta(loc, end_loc)
+        
+        # Defensive stats
+        tackles = len([e for e in team_events if e.get("type", {}).get("name") == "Duel" and e.get("duel", {}).get("type", {}).get("name") == "Tackle"])
+        interceptions = len([e for e in team_events if e.get("type", {}).get("name") == "Interception"])
+        clearances = len([e for e in team_events if e.get("type", {}).get("name") == "Clearance"])
+        blocks = len([e for e in team_events if e.get("type", {}).get("name") == "Block"])
+        
+        # Possession (approximate: count team events vs total)
+        total_events = len([e for e in events_list if e.get("type", {}).get("name") in ["Pass", "Carry", "Dribble", "Shot"]])
+        team_possession_events = len([e for e in team_events if e.get("type", {}).get("name") in ["Pass", "Carry", "Dribble", "Shot"]])
+        possession_pct = round(team_possession_events / total_events * 100) if total_events > 0 else 50
+        
+        pass_accuracy = round(len(complete_passes) / len(passes) * 100) if passes else 0
+        
+        return {
+            "match_id": config["match_id"],
+            "team": team,
+            "teams": teams,
+            "stats": {
+                "total_passes": len(passes),
+                "complete_passes": len(complete_passes),
+                "pass_accuracy": f"{pass_accuracy}%",
+                "shots": len(shots),
+                "shots_on_target": len([s for s in shots if s.get("shot", {}).get("outcome", {}).get("name") in ["Goal", "Saved"]]),
+                "goals": len(goals),
+                "total_xt": round(total_xt, 2),
+                "progressive_passes": progressive_passes,
+                "passes_into_box": passes_into_box,
+                "key_passes": key_passes,
+                "tackles": tackles,
+                "interceptions": interceptions,
+                "clearances": clearances,
+                "blocks": blocks,
+                "possession_pct": f"{possession_pct}%",
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/matches")

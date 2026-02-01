@@ -102,6 +102,34 @@ interface MatchSummary {
   players_analyzed: number;
 }
 
+interface TeamStats {
+  total_passes: number;
+  complete_passes: number;
+  pass_accuracy: string;
+  shots: number;
+  shots_on_target: number;
+  goals: number;
+  total_xt: number;
+  progressive_passes: number;
+  passes_into_box: number;
+  key_passes: number;
+  tackles: number;
+  interceptions: number;
+  clearances: number;
+  blocks: number;
+  possession_pct: string;
+}
+
+interface FormationPlayer {
+  player_id: number;
+  player_name: string;
+  short_name: string;
+  jersey_number: number;
+  position_name: string;
+  x: number;
+  y: number;
+}
+
 // ============================================
 // STATE
 // ============================================
@@ -135,6 +163,17 @@ const allPositions = ref<PlayerPosition[]>([]);
 // Match summary (whole-team view)
 const matchSummary = ref<MatchSummary | null>(null);
 const isLoadingMatchSummary = ref(false);
+
+// Team stats
+const teamStats = ref<TeamStats | null>(null);
+const isLoadingTeamStats = ref(false);
+
+// Formation
+const formation = ref<FormationPlayer[]>([]);
+const formationNumber = ref<number | null>(null);
+
+// Pitch view mode: 'formation' or 'heatmap'
+const pitchViewMode = ref<'formation' | 'heatmap'>('formation');
 
 // Computed: filtered players by team
 const filteredPlayers = computed(() => {
@@ -322,6 +361,16 @@ watch(selectedMatchId, (newId) => {
   if (newId) {
     fetchPlayers();
     fetchMatchSummary();
+    fetchTeamStats();
+    fetchFormation();
+  }
+});
+
+// Refetch team-specific data when team changes
+watch(selectedTeam, () => {
+  if (selectedMatchId.value) {
+    fetchTeamStats();
+    fetchFormation();
   }
 });
 
@@ -339,6 +388,42 @@ async function fetchMatchSummary() {
     matchSummary.value = null;
   } finally {
     isLoadingMatchSummary.value = false;
+  }
+}
+
+async function fetchTeamStats() {
+  if (selectedMatchId.value == null) return;
+  isLoadingTeamStats.value = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/team/stats?match_id=${selectedMatchId.value}&team=${encodeURIComponent(selectedTeam.value)}`);
+    if (res.ok) {
+      const data = await res.json();
+      teamStats.value = data.stats;
+    } else {
+      teamStats.value = null;
+    }
+  } catch {
+    teamStats.value = null;
+  } finally {
+    isLoadingTeamStats.value = false;
+  }
+}
+
+async function fetchFormation() {
+  if (selectedMatchId.value == null) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/formation?match_id=${selectedMatchId.value}&team=${encodeURIComponent(selectedTeam.value)}`);
+    if (res.ok) {
+      const data = await res.json();
+      formation.value = data.players || [];
+      formationNumber.value = data.formation;
+    } else {
+      formation.value = [];
+      formationNumber.value = null;
+    }
+  } catch {
+    formation.value = [];
+    formationNumber.value = null;
   }
 }
 
@@ -1265,32 +1350,68 @@ onMounted(() => {
                     )
                   "
                 >
-                  Click a moment below to visualize on pitch
+                  {{ activeHighlightVizData ? 'Showing selected moment' : (pitchViewMode === 'formation' ? 'Starting formation' : 'All player positions') }}
                 </p>
               </div>
             </div>
-            <UiBadge
-              variant="outline"
-              :class="
-                cn(
-                  'text-xs',
-                  isDarkMode
-                    ? 'border-cyan-500/30 text-cyan-400'
-                    : 'border-cyan-300 text-cyan-600'
-                )
-              "
-            >
-              <Icon name="lucide:crosshair" class="w-3 h-3 mr-1" />
-              StatsBomb Data
-            </UiBadge>
+            <div class="flex items-center gap-2">
+              <UiButton
+                v-if="activeHighlightVizData"
+                variant="ghost"
+                size="sm"
+                @click="activeHighlightVizData = null"
+                :class="cn('text-xs', isDarkMode ? 'text-white/70 hover:text-white' : 'text-gray-600 hover:text-gray-900')"
+              >
+                <Icon name="lucide:x" class="w-3 h-3 mr-1" />
+                Clear
+              </UiButton>
+              <!-- View mode toggle buttons -->
+              <div v-if="!activeHighlightVizData" class="flex items-center gap-1">
+                <UiButton
+                  variant="ghost"
+                  size="sm"
+                  @click="pitchViewMode = 'formation'"
+                  :class="cn('text-xs px-2', pitchViewMode === 'formation' ? (isDarkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900') : (isDarkMode ? 'text-white/50 hover:text-white' : 'text-gray-500 hover:text-gray-900'))"
+                >
+                  <Icon name="lucide:users" class="w-3 h-3 mr-1" />
+                  Formation
+                </UiButton>
+                <UiButton
+                  variant="ghost"
+                  size="sm"
+                  @click="pitchViewMode = 'heatmap'"
+                  :class="cn('text-xs px-2', pitchViewMode === 'heatmap' ? (isDarkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900') : (isDarkMode ? 'text-white/50 hover:text-white' : 'text-gray-500 hover:text-gray-900'))"
+                >
+                  <Icon name="lucide:flame" class="w-3 h-3 mr-1" />
+                  Heat Map
+                </UiButton>
+              </div>
+              <UiBadge
+                variant="outline"
+                :class="
+                  cn(
+                    'text-xs',
+                    isDarkMode
+                      ? 'border-cyan-500/30 text-cyan-400'
+                      : 'border-cyan-300 text-cyan-600'
+                  )
+                "
+              >
+                <Icon name="lucide:crosshair" class="w-3 h-3 mr-1" />
+                StatsBomb Data
+              </UiBadge>
+            </div>
           </div>
           
           <!-- Pitch Map Component -->
           <PitchMap 
             :activeAction="activeHighlightVizData" 
             :allPositions="allPositions"
+            :formation="formation"
             :isDarkMode="isDarkMode" 
-            :showHeatMap="true"
+            :showHeatMap="pitchViewMode === 'heatmap' || !!activeHighlightVizData"
+            :showFormation="pitchViewMode === 'formation' && !activeHighlightVizData"
+            :teamColor="selectedTeam === 'Argentina' ? '#75aadb' : '#f59e0b'"
           />
         </UiCard>
 
@@ -1696,7 +1817,7 @@ onMounted(() => {
           </UiButton>
         </UiCard>
 
-        <!-- Progress Tracking -->
+        <!-- Team Stats -->
         <UiCard
           :class="
             cn(
@@ -1707,98 +1828,89 @@ onMounted(() => {
             )
           "
         >
-          <h3 class="font-semibold mb-4 text-sm">Season Progress</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-semibold text-sm">{{ selectedTeam }} Stats</h3>
+            <UiBadge v-if="formationNumber" variant="outline" :class="cn('text-xs', isDarkMode ? 'border-white/20 text-white/70' : 'border-gray-300 text-gray-600')">
+              {{ String(formationNumber).split('').join('-') }}
+            </UiBadge>
+          </div>
 
-          <div class="space-y-3">
-            <div>
-              <div class="flex justify-between text-xs mb-2">
-                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Matches Analysed</span
-                >
-                <span class="font-semibold">12/38</span>
+          <!-- Loading state -->
+          <div v-if="isLoadingTeamStats" class="space-y-3">
+            <div v-for="i in 4" :key="i" :class="cn('h-6 rounded animate-pulse', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+          </div>
+
+          <!-- Team stats -->
+          <div v-else-if="teamStats" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <!-- Possession -->
+              <div :class="cn('rounded-lg p-3', isDarkMode ? 'bg-[#0a0b14]' : 'bg-blue-50')">
+                <div :class="cn('text-lg font-bold', isDarkMode ? 'text-blue-400' : 'text-blue-600')">{{ teamStats.possession_pct }}</div>
+                <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Possession</div>
               </div>
-              <div
-                :class="
-                  cn(
-                    'h-1.5 rounded-full overflow-hidden',
-                    isDarkMode ? 'bg-[#0a0b14]' : 'bg-gray-200'
-                  )
-                "
-              >
-                <div class="h-full bg-emerald-500 w-[32%]"></div>
+              <!-- Pass Accuracy -->
+              <div :class="cn('rounded-lg p-3', isDarkMode ? 'bg-[#0a0b14]' : 'bg-emerald-50')">
+                <div :class="cn('text-lg font-bold', isDarkMode ? 'text-emerald-400' : 'text-emerald-600')">{{ teamStats.pass_accuracy }}</div>
+                <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Pass Accuracy</div>
+              </div>
+              <!-- Goals -->
+              <div :class="cn('rounded-lg p-3', isDarkMode ? 'bg-[#0a0b14]' : 'bg-purple-50')">
+                <div :class="cn('text-lg font-bold', isDarkMode ? 'text-purple-400' : 'text-purple-600')">{{ teamStats.goals }}</div>
+                <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Goals</div>
+              </div>
+              <!-- Shots -->
+              <div :class="cn('rounded-lg p-3', isDarkMode ? 'bg-[#0a0b14]' : 'bg-orange-50')">
+                <div :class="cn('text-lg font-bold', isDarkMode ? 'text-orange-400' : 'text-orange-600')">{{ teamStats.shots }}</div>
+                <div :class="cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')">Shots ({{ teamStats.shots_on_target }} on target)</div>
               </div>
             </div>
 
-            <div>
-              <div class="flex justify-between text-xs mb-2">
-                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Drills Completed</span
-                >
-                <span class="font-semibold">45/84</span>
+            <!-- Additional stats -->
+            <div :class="cn('pt-3 border-t space-y-2', isDarkMode ? 'border-white/10' : 'border-gray-200')">
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Total xT</span>
+                <span :class="cn('font-semibold', (teamStats.total_xt ?? 0) >= 0 ? (isDarkMode ? 'text-emerald-400' : 'text-emerald-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600'))">
+                  {{ teamStats.total_xt >= 0 ? '+' : '' }}{{ teamStats.total_xt?.toFixed(2) }}
+                </span>
               </div>
-              <div
-                :class="
-                  cn(
-                    'h-1.5 rounded-full overflow-hidden',
-                    isDarkMode ? 'bg-[#0a0b14]' : 'bg-gray-200'
-                  )
-                "
-              >
-                <div class="h-full bg-blue-500 w-[54%]"></div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Progressive Passes</span>
+                <span class="font-semibold">{{ teamStats.progressive_passes }}</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Key Passes</span>
+                <span class="font-semibold">{{ teamStats.key_passes }}</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Passes into Box</span>
+                <span class="font-semibold">{{ teamStats.passes_into_box }}</span>
               </div>
             </div>
 
-            <div>
-              <div class="flex justify-between text-xs mb-2">
-                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Improvement Areas Addressed</span
-                >
-                <span class="font-semibold">7/10</span>
+            <!-- Defensive stats -->
+            <div :class="cn('pt-3 border-t space-y-2', isDarkMode ? 'border-white/10' : 'border-gray-200')">
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Tackles</span>
+                <span class="font-semibold">{{ teamStats.tackles }}</span>
               </div>
-              <div
-                :class="
-                  cn(
-                    'h-1.5 rounded-full overflow-hidden',
-                    isDarkMode ? 'bg-[#0a0b14]' : 'bg-gray-200'
-                  )
-                "
-              >
-                <div class="h-full bg-purple-500 w-[70%]"></div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Interceptions</span>
+                <span class="font-semibold">{{ teamStats.interceptions }}</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Blocks</span>
+                <span class="font-semibold">{{ teamStats.blocks }}</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">Clearances</span>
+                <span class="font-semibold">{{ teamStats.clearances }}</span>
               </div>
             </div>
           </div>
 
-          <div
-            :class="
-              cn(
-                'mt-4 pt-4 border-t',
-                isDarkMode ? 'border-white/10' : 'border-gray-200'
-              )
-            "
-          >
-            <div class="flex items-center justify-between">
-              <span
-                :class="
-                  cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
-                "
-                >Overall Rating Trend</span
-              >
-              <div class="flex items-center gap-1">
-                <Icon
-                  name="lucide:trending-up"
-                  class="w-3 h-3 text-emerald-400"
-                />
-                <span
-                  :class="
-                    cn(
-                      'text-xs font-semibold',
-                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
-                    )
-                  "
-                  >+1.2</span
-                >
-              </div>
-            </div>
+          <!-- Empty state -->
+          <div v-else :class="cn('text-center py-4 text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')">
+            Select a match to view team stats
           </div>
         </UiCard>
       </div>

@@ -17,17 +17,32 @@ export interface PlayerPosition {
   type: string;
 }
 
+export interface FormationPlayer {
+  player_name: string;
+  short_name: string;
+  jersey_number: number;
+  position_name: string;
+  x: number;
+  y: number;
+}
+
 const props = withDefaults(
   defineProps<{
     activeAction: PitchVizData | null;
     allPositions?: PlayerPosition[];
+    formation?: FormationPlayer[];
     isDarkMode?: boolean;
     showHeatMap?: boolean;
+    showFormation?: boolean;
+    teamColor?: string;
   }>(),
   {
     allPositions: () => [],
+    formation: () => [],
     isDarkMode: true,
     showHeatMap: true,
+    showFormation: false,
+    teamColor: "#3b82f6",
   }
 );
 
@@ -36,16 +51,22 @@ const svgHeight = (svgWidth / 120) * 80;
 
 const actionColor = computed(() => {
   if (!props.activeAction) return "#666";
-  const outcome = props.activeAction.outcome || "";
-  if (["goal", "complete", "won"].includes(outcome)) return "#22c55e";
-  if (["incomplete", "missed", "lost"].includes(outcome)) return "#f59e0b";
+  const outcome = (props.activeAction.outcome || "").toLowerCase();
+  // Green for success
+  if (["goal", "complete", "won", "success"].includes(outcome)) return "#22c55e";
+  // Amber/red for failures
+  if (["incomplete", "missed", "lost", "out", "pass offside", "unknown", "fail", "failed"].includes(outcome)) return "#ef4444";
+  // Blue for saves/blocks
   if (["saved", "blocked"].includes(outcome)) return "#3b82f6";
-  return props.activeAction.team_color || "#06b6d4";
+  // Default: if outcome is empty/undefined, use team color; otherwise treat as failure
+  if (!outcome) return props.activeAction.team_color || "#06b6d4";
+  return "#ef4444"; // Unknown outcome = treat as failure
 });
 
 const isSuccess = computed(() => {
   if (!props.activeAction) return true;
-  return ["goal", "complete", "won"].includes(props.activeAction.outcome || "");
+  const outcome = (props.activeAction.outcome || "").toLowerCase();
+  return ["goal", "complete", "won", "success"].includes(outcome);
 });
 
 const hasMovement = computed(() => {
@@ -160,6 +181,49 @@ function getHeatColor(type: string) {
           opacity="0.5"
           filter="url(#heatBlur)"
         />
+      </g>
+
+      <!-- Formation display -->
+      <g v-if="showFormation && formation.length > 0">
+        <g v-for="(player, idx) in formation" :key="'f'+idx">
+          <!-- Player circle -->
+          <circle
+            :cx="player.x"
+            :cy="player.y"
+            r="4"
+            :fill="teamColor"
+            :stroke="isDarkMode ? '#fff' : '#000'"
+            stroke-width="0.4"
+            opacity="0.9"
+          />
+          <!-- Jersey number -->
+          <text
+            :x="player.x"
+            :y="player.y + 0.8"
+            font-size="3"
+            fill="#fff"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            font-weight="bold"
+          >{{ player.jersey_number }}</text>
+          <!-- Player name label -->
+          <rect
+            :x="player.x - 8"
+            :y="player.y + 5"
+            width="16"
+            height="3.5"
+            :fill="isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)'"
+            rx="0.5"
+          />
+          <text
+            :x="player.x"
+            :y="player.y + 7"
+            font-size="2"
+            :fill="isDarkMode ? '#fff' : '#1f2937'"
+            text-anchor="middle"
+            font-weight="500"
+          >{{ player.short_name }}</text>
+        </g>
       </g>
 
       <!-- Active action: movement (pass/carry) -->
