@@ -4,22 +4,44 @@ Uses trained models to identify True Highlights based on execution difficulty an
 """
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from urllib.parse import unquote
 
 import joblib
 import numpy as np
 import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from ultils.match_loader import get_match_events, get_match_lineups
 
 # --- CONFIGURATION ---
 MATCH_ID = 3869151
-YOUTUBE_VIDEO_ID = "vkyCLzUvv7c"
 MODELS_DIR = Path(__file__).parent / "models"
 
-# Video Offsets (synced to YouTube timestamps)
+# World Cup 2022 matches - match_id, match_title (for cache filename), display_name
+# 3869151 first (has cached data); others require statsbombpy to fetch
+WORLD_CUP_MATCHES = [
+    {"match_id": 3869151, "match_title": "argentina_v_france", "label": "Argentina vs Australia (R16)", "stage": "Round of 16"},
+    {"match_id": 3869685, "match_title": "argentina_v_france_final", "label": "Argentina vs France (Final)", "stage": "Final"},
+    {"match_id": 3869519, "match_title": "argentina_v_croatia", "label": "Argentina vs Croatia (Semi-final)", "stage": "Semi-finals"},
+    {"match_id": 3869321, "match_title": "netherlands_v_argentina", "label": "Netherlands vs Argentina (Quarter-final)", "stage": "Quarter-finals"},
+    {"match_id": 3857289, "match_title": "argentina_v_mexico", "label": "Argentina vs Mexico (Group C)", "stage": "Group Stage"},
+]
+
+# FIFA+ Base URL (manual scrubbing required - no timestamp parameters supported)
+FIFA_PLUS_BASE_URL = "https://www.fifa.com/fifaplus/en/watch/7CPdFjceNZkadrQkHj85l4"
+
+# Period Offsets: Translate StatsBomb match time to real elapsed match time
+# These offsets account for the actual video timeline (stoppage time, delays, etc.)
+# Period 1: First half starts at 0:00, Period 2: Second half starts after halftime, etc.
 PERIOD_OFFSETS = {
-    1: 595, 2: 3963, 3: 7339, 4: 8443, 5: 9500
+    1: 0,      # First half: minute 0-45
+    2: 2700,   # Second half: 45 min offset (45*60)
+    3: 5400,   # ET first half: 90 min offset (90*60)
+    4: 6300,   # ET second half: 105 min offset (105*60)
+    5: 7200    # Penalties: 120 min offset (120*60)
 }
 
 # StatsBomb pitch dimensions and goal coordinates
@@ -518,26 +540,47 @@ def _score_shot(event: dict, game_state: dict) -> tuple[float, str, float]:
 
 
 # --- VIDEO SYNC UTILITIES ---
-def get_pitch_pilot_url(minute: int, second: int, period: int) -> str:
+def get_pitch_pilot_url(minute: int, second: int, period: int) -> dict:
     """
-    Generate YouTube URL with timestamp synced to match time.
-    Handles different period offsets for full match replays.
-    """
-    current_offset = PERIOD_OFFSETS.get(period, 595)
+    Calculate the display timestamp for FIFA+ manual video scrubbing.
     
+    FIFA+ does not support URL timestamp parameters, so we return:
+    - base_url: The FIFA+ match video URL
+    - display_time_str: Human-readable timestamp (e.g., "35:42") for manual navigation
+    
+    Args:
+        minute: StatsBomb event minute
+        second: StatsBomb event second
+        period: Match period (1=first half, 2=second half, 3=ET1, 4=ET2, 5=penalties)
+    
+    Returns:
+        dict: {"base_url": str, "display_time_str": str}
+    """
+    # Calculate elapsed seconds within the current period
     if period == 1:
-        elapsed = (minute * 60) + second
+        period_elapsed = (minute * 60) + second
     elif period == 2:
-        elapsed = ((minute - 45) * 60) + second
+        period_elapsed = ((minute - 45) * 60) + second
     elif period == 3:
-        elapsed = ((minute - 90) * 60) + second
+        period_elapsed = ((minute - 90) * 60) + second
     elif period == 4:
-        elapsed = ((minute - 105) * 60) + second
+        period_elapsed = ((minute - 105) * 60) + second
     else:
-        elapsed = 0
+        period_elapsed = 0
     
-    total_seconds = elapsed + current_offset
-    return f"https://youtu.be/{YOUTUBE_VIDEO_ID}?si=OnqNuuoaeIR1kVXI&t={int(total_seconds)}"
+    # Add period offset to get total elapsed match seconds
+    period_offset = PERIOD_OFFSETS.get(period, 0)
+    elapsed_match_seconds = period_elapsed + period_offset
+    
+    # Format as MM:SS display string
+    display_minutes = elapsed_match_seconds // 60
+    display_seconds = elapsed_match_seconds % 60
+    display_time_str = f"{display_minutes}:{display_seconds:02d}"
+    
+    return {
+        "base_url": FIFA_PLUS_BASE_URL,
+        "display_time_str": display_time_str
+    }
 
 
 # --- GAME STATE TRACKER ---
@@ -587,12 +630,43 @@ class GameStateTracker:
         }
 
 
+# --- PLAYER EVENT MATCHING ---
+def _filter_player_events(events_list: list, player_id: Optional[int], player_name: str) -> list:
+    """Filter events for a player. Handles ID/name matching with type coercion and fallbacks."""
+    def event_player_matches(e, pid, pname):
+        player = e.get("player") or {}
+        if not player:
+            return False
+        eid = player.get("id")
+        ename = (player.get("name") or "").strip()
+        if pid is not None and eid is not None:
+            try:
+                if int(eid) == int(pid):
+                    return True
+            except (TypeError, ValueError):
+                pass
+        if pname and ename:
+            if ename == pname or ename.lower() == pname.lower():
+                return True
+            if pname.lower() in ename.lower() or ename.lower() in pname.lower():
+                return True
+        return False
+
+    if player_id is not None:
+        result = [e for e in events_list if event_player_matches(e, player_id, player_name)]
+        if not result and player_name:
+            result = [e for e in events_list if event_player_matches(e, None, player_name)]
+        return result
+    return [e for e in events_list if event_player_matches(e, None, player_name)]
+
+
 # --- MAIN PLAYER ANALYSIS FUNCTION ---
 def get_player_data(
     match_events: dict,
     player_name: str,
     home_team: str = "Argentina",
-    top_n: int = 5
+    top_n: int = 5,
+    player_id: Optional[int] = None
 ) -> tuple[dict, list, list]:
     """
     Analyze player events and return stats with top highlights AND areas for improvement.
@@ -602,6 +676,7 @@ def get_player_data(
         player_name: Name of player to analyze
         home_team: Home team name for win probability calculations
         top_n: Number of top moments to return for each category
+        player_id: Optional player ID for reliable matching (preferred over name)
     
     Returns:
         tuple: (player_stats, top_highlights, areas_for_improvement)
@@ -613,14 +688,24 @@ def get_player_data(
     # Initialize game state tracker
     game_state = GameStateTracker(home_team)
     
-    # Filter for player events
-    player_events = [
-        e for e in events_list 
-        if e.get("player", {}).get("name") == player_name
-    ]
+    player_events = _filter_player_events(events_list, player_id, player_name)
     
     if not player_events:
-        return {"error": f"Player '{player_name}' not found"}, [], []
+        # Player in squad but did not play (no events)
+        empty_stats = {
+            "name": player_name,
+            "total_highlight_score": 0.0,
+            "total_value_added": 0.0,
+            "total_actions": 0,
+            "positive_contributions": 0,
+            "negative_contributions": 0,
+            "highlights_count": 0,
+            "lowlights_count": 0,
+            "pass_accuracy": "N/A",
+            "shots": 0,
+            "goals": 0,
+        }
+        return {"error": f"Player '{player_name}' not found", "player_did_not_play": True, **empty_stats}, [], []
     
     print(f"Analyzing {len(player_events)} events for {player_name}...")
     
@@ -655,18 +740,21 @@ def get_player_data(
             negative_contributions += 1
         
         # Store moment if it meets either threshold (highlight or lowlight)
+        video_info = get_pitch_pilot_url(
+            event["minute"], 
+            event["second"], 
+            event["period"]
+        )
+        mn, sc = int(event.get("minute", 0)), int(event.get("second", 0))
         moment_data = {
-            "time_display": f"{event['minute']}:{event['second']:02d}",
+            "time_display": f"{mn}:{sc:02d}",
             "event_type": event["type"]["name"],
             "description": description,
             "highlight_score": round(highlight_score, 3),
             "value_added": round(value_added, 3),
             "xt_delta": round(xt_delta, 4),
-            "video_url": get_pitch_pilot_url(
-                event["minute"], 
-                event["second"], 
-                event["period"]
-            ),
+            "video_url": video_info["base_url"],
+            "video_time": video_info["display_time_str"],
             "period": event["period"],
             "minute": event["minute"]
         }
@@ -750,6 +838,11 @@ def get_match_highlights(
         )
         
         if highlight_score > HIGHLIGHT_THRESHOLD:
+            video_info = get_pitch_pilot_url(
+                event["minute"],
+                event["second"],
+                event["period"]
+            )
             all_moments.append({
                 "player": player_name,
                 "team": event.get("team", {}).get("name", ""),
@@ -757,14 +850,157 @@ def get_match_highlights(
                 "event_type": event["type"]["name"],
                 "description": description,
                 "highlight_score": round(highlight_score, 3),
-                "video_url": get_pitch_pilot_url(
-                    event["minute"],
-                    event["second"],
-                    event["period"]
-                )
+                "video_url": video_info["base_url"],
+                "video_time": video_info["display_time_str"]
             })
     
     return sorted(all_moments, key=lambda x: x["highlight_score"], reverse=True)[:top_n]
+
+
+def get_match_summary(
+    match_events: dict,
+    lineups: dict,
+    match_label: str,
+    home_team: Optional[str] = None,
+    top_players_n: int = 5,
+    improvement_players_n: int = 5,
+) -> dict:
+    """
+    Generate full match summary: best players, players needing improvement, team summary, team improvements.
+    """
+    if home_team is None and lineups:
+        home_team = next(iter(lineups.keys()), "Argentina")
+
+    events_list = list(match_events.values())
+    # Get unique players who have events
+    player_ids_seen = set()
+    players_with_events = []
+    for e in events_list:
+        p = e.get("player")
+        if not p:
+            continue
+        pid = p.get("id")
+        pname = (p.get("name") or "").strip()
+        if not pname or pid in player_ids_seen:
+            continue
+        player_ids_seen.add(pid)
+        players_with_events.append((pid, pname))
+
+    # Analyze each player
+    all_player_stats = []
+    all_lowlights_by_player = []
+    all_highlights_by_player = []
+
+    for pid, pname in players_with_events:
+        stats, highlights, lowlights = get_player_data(
+            match_events, pname, home_team=home_team or "Argentina", top_n=3, player_id=pid
+        )
+        if "error" in stats:
+            continue
+        team = next(
+            (t for t, plist in lineups.items()
+             for p in plist if p.get("player_id") == pid or p.get("player_name") == pname),
+            ""
+        )
+        all_player_stats.append({
+            "player_name": stats["name"],
+            "player_id": pid,
+            "team": team,
+            "stats": stats,
+            "top_highlights": highlights,
+            "areas_for_improvement": lowlights,
+        })
+        for l in lowlights:
+            all_lowlights_by_player.append({"player": pname, "description": l.get("description", ""), "event_type": l.get("event_type", "")})
+        for h in highlights:
+            all_highlights_by_player.append({"player": pname, "description": h.get("description", "")})
+
+    # Sort by net impact: best first, then worst
+    all_player_stats.sort(key=lambda x: x["stats"]["total_highlight_score"], reverse=True)
+    best_players = all_player_stats[:top_players_n]
+    # Players needing improvement: lowest net score first, then most negative contributions
+    improvement_candidates = sorted(
+        all_player_stats,
+        key=lambda x: (x["stats"]["total_highlight_score"], -x["stats"]["negative_contributions"])
+    )[:improvement_players_n]
+
+    # Build match summary text
+    total_events = len([e for e in events_list if e.get("player")])
+    total_goals = len([e for e in events_list
+                       if e.get("type", {}).get("name") == "Shot"
+                       and e.get("shot", {}).get("outcome", {}).get("name") == "Goal"])
+    teams = list(lineups.keys()) if lineups else []
+    match_summary_text = (
+        f"{match_label} featured {len(players_with_events)} players with {total_events} recorded actions. "
+    )
+    if best_players:
+        top_names = ", ".join(s["stats"]["name"].split()[-1] for s in best_players[:3])
+        match_summary_text += (
+            f"Standout performers included {top_names}. "
+        )
+    if improvement_candidates and improvement_candidates[0]["stats"]["total_highlight_score"] < 0:
+        imp_names = ", ".join(s["stats"]["name"].split()[-1] for s in improvement_candidates[:3])
+        match_summary_text += (
+            f"Players who could improve: {imp_names}. "
+        )
+    match_summary_text += (
+        f"Total goals in the match: {total_goals}. "
+    )
+
+    # Team-wide improvements (from aggregate lowlight themes)
+    event_types_in_lowlights = {}
+    for item in all_lowlights_by_player:
+        et = item.get("event_type") or "Other"
+        event_types_in_lowlights[et] = event_types_in_lowlights.get(et, 0) + 1
+    common_issues = sorted(event_types_in_lowlights.items(), key=lambda x: -x[1])[:5]
+    team_improvements = []
+    type_to_advice = {
+        "Pass": "Improve pass selection and weight under pressure",
+        "Dribble": "Work on ball retention in 1v1 situations",
+        "Dispossessed": "Enhance body positioning and shielding",
+        "Bad Touch": "Focus on first-touch control in tight spaces",
+        "Shot": "Improve shot selection and composure in front of goal",
+        "Foul Committed": "Reduce unnecessary fouls through better positioning",
+        "Block": "Anticipate blocking angles earlier",
+    }
+    for et, _ in common_issues:
+        advice = type_to_advice.get(et)
+        if advice:
+            team_improvements.append(advice)
+    if not team_improvements and all_lowlights_by_player:
+        team_improvements.append("Reduce turnovers and improve decision-making under pressure")
+    if not team_improvements:
+        team_improvements.append("Maintain current standards and focus on consistency")
+
+    return {
+        "match_title": match_label,
+        "match_summary": match_summary_text,
+        "best_players": [
+            {
+                "player_name": p["player_name"],
+                "player_id": p["player_id"],
+                "team": p["team"],
+                "net_impact": p["stats"]["total_highlight_score"],
+                "goals": p["stats"]["goals"],
+                "highlights_count": p["stats"]["highlights_count"],
+            }
+            for p in best_players
+        ],
+        "players_needing_improvement": [
+            {
+                "player_name": p["player_name"],
+                "player_id": p["player_id"],
+                "team": p["team"],
+                "net_impact": p["stats"]["total_highlight_score"],
+                "lowlights_count": p["stats"]["lowlights_count"],
+                "top_issue": p["areas_for_improvement"][0]["description"] if p["areas_for_improvement"] else "General consistency",
+            }
+            for p in improvement_candidates
+        ],
+        "team_improvements": team_improvements,
+        "total_goals": total_goals,
+        "players_analyzed": len(all_player_stats),
+    }
 
 
 # --- CLAUDE PROMPT GENERATION ---
@@ -801,7 +1037,7 @@ def generate_claude_prompt(
 - **Event:** {best_highlight['description']}
 - **Impact Score:** {best_highlight['highlight_score']:.3f}
 - **Value Added:** {best_highlight['value_added']:.3f}
-- **Video:** {best_highlight['video_url']}
+- **Video:** {best_highlight['video_url']} (scrub to {best_highlight['video_time']})
 """
     else:
         highlight_section = """
@@ -818,7 +1054,7 @@ No significant highlights recorded in this match.
 - **Event:** {worst_lowlight['description']}
 - **Impact Score:** {worst_lowlight['highlight_score']:.3f}
 - **Value Lost:** {abs(worst_lowlight['value_added']):.3f}
-- **Video:** {worst_lowlight['video_url']}
+- **Video:** {worst_lowlight['video_url']} (scrub to {worst_lowlight['video_time']})
 """
     else:
         lowlight_section = """
@@ -878,6 +1114,122 @@ Keep the tone professional, supportive, and actionable. Use football terminology
     return prompt
 
 
+def generate_player_summary(
+    player_name: str,
+    stats: dict,
+    top_highlights: list,
+    areas_for_improvement: list
+) -> dict:
+    """
+    Generate player summary with structured lists: what_went_well, what_to_work_on, even_better_if.
+    Returns dict with 'summary_text' and structured lists for frontend display.
+    """
+    short_name = stats.get("name", player_name)
+    if " " in short_name:
+        short_name = short_name.split()[-1]
+
+    total = stats.get("total_actions", 0)
+    net = stats.get("total_highlight_score", 0)
+    pos = stats.get("positive_contributions", 0)
+    neg = stats.get("negative_contributions", 0)
+    goals = stats.get("goals", 0)
+    shots = stats.get("shots", 0)
+    pass_acc = stats.get("pass_accuracy", "N/A")
+    n_high = stats.get("highlights_count", 0)
+    n_low = stats.get("lowlights_count", 0)
+
+    what_went_well = []
+    what_to_work_on = []
+    even_better_if = []
+
+    if total == 0:
+        return {
+            "summary_text": (
+                f"{short_name} was named in the squad but did not feature in this match. "
+                "No on-pitch data is available for analysis."
+            ),
+            "what_went_well": [],
+            "what_to_work_on": [],
+            "even_better_if": [],
+        }
+
+    # What went well - from highlights and positive stats
+    if goals > 0:
+        what_went_well.append(f"Scored {goals} goal{'s' if goals > 1 else ''}")
+    if pass_acc and pass_acc != "N/A":
+        pct = int(pass_acc.replace("%", "")) if "%" in str(pass_acc) else 0
+        if pct >= 85:
+            what_went_well.append(f"Strong pass accuracy ({pass_acc})")
+        elif pct >= 75:
+            what_went_well.append(f"Solid passing ({pass_acc})")
+    if pos > neg and total >= 10:
+        what_went_well.append(f"More positive than negative actions ({pos} vs {neg})")
+    if net > 0.5:
+        what_went_well.append("Positive net impact on the match")
+    for i, h in enumerate(top_highlights[:3]):
+        what_went_well.append(h.get("description", f"Key contribution at {h.get('time_display', '')}"))
+    if not what_went_well:
+        what_went_well.append(f"Completed {total} actions in the match")
+
+    # What to work on - from lowlights
+    for i, l in enumerate(areas_for_improvement[:4]):
+        desc = l.get("description", "")
+        if desc and desc not in what_to_work_on:
+            what_to_work_on.append(desc)
+    if neg > pos and total >= 10 and not what_to_work_on:
+        what_to_work_on.append("Reduce negative contributions and improve decision-making under pressure")
+    if pass_acc and pass_acc != "N/A":
+        pct = int(pass_acc.replace("%", "")) if "%" in str(pass_acc) else 0
+        if pct < 70 and "passing" not in " ".join(what_to_work_on).lower():
+            what_to_work_on.append(f"Improve pass accuracy (current: {pass_acc})")
+    if not what_to_work_on:
+        what_to_work_on.append("Maintain consistency and build on strengths")
+
+    # Even better if - growth suggestions
+    if goals == 0 and shots > 0:
+        even_better_if.append("Convert more chances — work on finishing in training")
+    if net > 0.3 and n_high >= 2:
+        even_better_if.append("Keep producing standout moments at key times")
+    if neg > 0:
+        even_better_if.append("Cut out avoidable turnovers in dangerous areas")
+    if n_low > 2:
+        even_better_if.append("Improve composure when under pressure")
+    if not even_better_if:
+        even_better_if.append("Continue developing and stay consistent")
+
+    # Summary text
+    parts = []
+    if net > 0.5:
+        parts.append(f"{short_name} had a positive impact overall")
+    elif net < -0.5:
+        parts.append(f"{short_name} struggled to influence the game positively")
+    else:
+        parts.append(f"{short_name} had a mixed performance")
+    parts.append(f"with {total} total actions ({pos} positive, {neg} negative).")
+    if goals > 0:
+        parts.append(f"Scored {goals} goal{'s' if goals > 1 else ''} from {shots} shot{'s' if shots != 1 else ''}.")
+    if pass_acc != "N/A":
+        parts.append(f"Pass accuracy: {pass_acc}.")
+    summary_text = " ".join(parts)
+
+    return {
+        "summary_text": summary_text,
+        "what_went_well": what_went_well[:6],
+        "what_to_work_on": what_to_work_on[:5],
+        "even_better_if": even_better_if[:4],
+    }
+
+
+def generate_player_summary_text(
+    player_name: str,
+    stats: dict,
+    top_highlights: list,
+    areas_for_improvement: list
+) -> str:
+    """Legacy: return just the summary text. Use generate_player_summary for structured data."""
+    return generate_player_summary(player_name, stats, top_highlights, areas_for_improvement)["summary_text"]
+
+
 def generate_coach_summary(
     player_name: str,
     stats: dict,
@@ -907,7 +1259,8 @@ def generate_coach_summary(
                 "time": h["time_display"],
                 "description": h["description"],
                 "score": h["highlight_score"],
-                "video_url": h["video_url"]
+                "video_url": h["video_url"],
+                "video_time": h["video_time"]
             }
             for h in top_highlights
         ],
@@ -916,7 +1269,8 @@ def generate_coach_summary(
                 "time": l["time_display"],
                 "description": l["description"],
                 "score": l["highlight_score"],
-                "video_url": l["video_url"]
+                "video_url": l["video_url"],
+                "video_time": l["video_time"]
             }
             for l in areas_for_improvement
         ],
@@ -924,6 +1278,478 @@ def generate_coach_summary(
             player_name, stats, top_highlights, areas_for_improvement
         )
     }
+
+
+# --- PITCH VISUALIZATION DATA EXTRACTION ---
+def extract_pitch_viz_data(event: dict) -> Optional[dict]:
+    """
+    Extract pitch visualization data from a StatsBomb event.
+    Returns coordinates and metadata for drawing on a pitch map.
+    """
+    event_type = event.get("type", {}).get("name", "")
+    location = event.get("location")
+    
+    if not location:
+        return None
+    
+    player_name = event.get("player", {}).get("name", "Unknown")
+    # Get short name (last name + first initial)
+    name_parts = player_name.split()
+    short_name = f"{name_parts[-1][:10]}" if name_parts else "Unknown"
+    
+    team_name = event.get("team", {}).get("name", "")
+    team_color = "#3b82f6" if team_name == "Argentina" else "#ef4444"  # Blue for Argentina, Red for France
+    
+    viz_data = {
+        "player_name": short_name,
+        "team_color": team_color,
+    }
+    
+    if event_type == "Pass":
+        pass_data = event.get("pass", {})
+        end_location = pass_data.get("end_location")
+        if end_location:
+            # In StatsBomb, missing 'outcome' means pass was successful
+            outcome = "incomplete" if "outcome" in pass_data else "complete"
+            viz_data.update({
+                "action_type": "pass",
+                "start_coords": [round(location[0], 1), round(location[1], 1)],
+                "end_coords": [round(end_location[0], 1), round(end_location[1], 1)],
+                "outcome": outcome,
+            })
+            return viz_data
+    
+    elif event_type == "Carry":
+        carry_data = event.get("carry", {})
+        end_location = carry_data.get("end_location")
+        if end_location:
+            viz_data.update({
+                "action_type": "carry",
+                "start_coords": [round(location[0], 1), round(location[1], 1)],
+                "end_coords": [round(end_location[0], 1), round(end_location[1], 1)],
+                "outcome": "complete",
+            })
+            return viz_data
+    
+    elif event_type == "Dribble":
+        dribble_outcome = event.get("dribble", {}).get("outcome", {}).get("name", "")
+        outcome = "complete" if dribble_outcome == "Complete" else "incomplete"
+        viz_data.update({
+            "action_type": "dribble",
+            "coords": [round(location[0], 1), round(location[1], 1)],
+            "outcome": outcome,
+        })
+        return viz_data
+    
+    elif event_type == "Shot":
+        shot_data = event.get("shot", {})
+        shot_outcome = shot_data.get("outcome", {}).get("name", "")
+        
+        if shot_outcome == "Goal":
+            outcome = "goal"
+        elif shot_outcome == "Saved":
+            outcome = "saved"
+        elif shot_outcome == "Blocked":
+            outcome = "blocked"
+        else:
+            outcome = "missed"
+        
+        viz_data.update({
+            "action_type": "shot",
+            "coords": [round(location[0], 1), round(location[1], 1)],
+            "outcome": outcome,
+        })
+        return viz_data
+    
+    elif event_type in ["Interception", "Tackle", "Block", "Clearance", "Ball Recovery"]:
+        key = event_type.lower().replace(" ", "_")
+        sub = event.get(key, {}) or {}
+        outcome_name = (sub.get("outcome") or {}).get("name", "") if isinstance(sub.get("outcome"), dict) else ""
+        outcome = "won" if outcome_name != "Lost" else "lost"
+        viz_data.update({
+            "action_type": "defense",
+            "coords": [round(location[0], 1), round(location[1], 1)],
+            "outcome": outcome,
+        })
+        return viz_data
+
+    # Fallback: any event with location (Dispossessed, Bad Touch, Ball Receipt, etc.)
+    viz_data.update({
+        "action_type": "other",
+        "coords": [round(location[0], 1), round(location[1], 1)],
+        "outcome": "complete",
+    })
+    return viz_data
+
+
+def get_player_analysis_with_viz(
+    match_events: dict,
+    player_name: str,
+    home_team: str = "Argentina",
+    top_n: int = 5,
+    player_id: Optional[int] = None
+) -> dict:
+    """
+    Get player analysis with pitch visualization data included.
+    Returns a complete response for the frontend.
+    Handles "player did not play" by returning a friendly structure instead of error.
+    """
+    stats, highlights, lowlights = get_player_data(
+        match_events, player_name, home_team, top_n, player_id
+    )
+    
+    if "error" in stats:
+        if stats.get("player_did_not_play"):
+            summ = generate_player_summary(player_name, stats, [], [])
+            return {
+                "player_name": player_name,
+                "player_did_not_play": True,
+                "stats": {k: v for k, v in stats.items() if k not in ("error", "player_did_not_play")},
+                "top_highlights": [],
+                "areas_for_improvement": [],
+                "all_positions": [],
+                "player_summary": summ["summary_text"],
+                "what_went_well": [],
+                "what_to_work_on": [],
+                "even_better_if": [],
+            }
+        return {"error": stats["error"]}
+    
+    # Get player events for pitch viz (same matching as get_player_data)
+    events_list = list(match_events.values())
+    player_events = _filter_player_events(events_list, player_id, player_name)
+    
+    # Add pitch_viz_data to highlights
+    for highlight in highlights:
+        for event in player_events:
+            mn, sc = int(event.get("minute", 0)), int(event.get("second", 0))
+            event_time = f"{mn}:{sc:02d}"
+            if event_time == highlight["time_display"]:
+                viz_data = extract_pitch_viz_data(event)
+                if viz_data:
+                    highlight["pitch_viz_data"] = viz_data
+                break
+    
+    # Add pitch_viz_data to lowlights
+    for lowlight in lowlights:
+        for event in player_events:
+            mn, sc = int(event.get("minute", 0)), int(event.get("second", 0))
+            event_time = f"{mn}:{sc:02d}"
+            if event_time == lowlight["time_display"]:
+                viz_data = extract_pitch_viz_data(event)
+                if viz_data:
+                    lowlight["pitch_viz_data"] = viz_data
+                break
+    
+    # Generate all action positions for heat map
+    all_positions = []
+    for event in player_events:
+        location = event.get("location")
+        if location:
+            all_positions.append({
+                "x": round(location[0], 1),
+                "y": round(location[1], 1),
+                "type": event.get("type", {}).get("name", ""),
+            })
+    
+    summ = generate_player_summary(stats["name"], stats, highlights, lowlights)
+    return {
+        "player_name": stats["name"],
+        "stats": stats,
+        "top_highlights": highlights,
+        "areas_for_improvement": lowlights,
+        "all_positions": all_positions,  # For heat map
+        "player_summary": summ["summary_text"],
+        "what_went_well": summ["what_went_well"],
+        "what_to_work_on": summ["what_to_work_on"],
+        "even_better_if": summ["even_better_if"],
+    }
+
+
+# --- FASTAPI APPLICATION ---
+app = FastAPI(
+    title="CoachOS API",
+    description="ML-Driven Player Performance Analysis",
+    version="1.0.0"
+)
+
+# CORS middleware for frontend - allow common dev origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3002",
+        "http://127.0.0.1:3001",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:24678",
+        "http://127.0.0.1:24678",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+# Cache match data by match_id
+_match_cache: Dict[int, tuple] = {}
+_match_summary_cache: Dict[int, dict] = {}
+
+
+def _get_match_config(match_id: int) -> Optional[dict]:
+    """Get match config from WORLD_CUP_MATCHES by match_id."""
+    for m in WORLD_CUP_MATCHES:
+        if m["match_id"] == match_id:
+            return m
+    return None
+
+
+def get_cached_match_data(match_id: Optional[int] = None):
+    """Get cached match data for the given match_id. Defaults to first World Cup match."""
+    if match_id is None:
+        match_id = WORLD_CUP_MATCHES[0]["match_id"]
+    config = _get_match_config(match_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
+    if match_id not in _match_cache:
+        _match_cache[match_id] = load_match_data(config["match_id"], config["match_title"])
+    return _match_cache[match_id][0], _match_cache[match_id][1], config
+
+
+# --- API RESPONSE MODELS ---
+class PlayerInfo(BaseModel):
+    player_id: int
+    player_name: str
+    player_nickname: Optional[str] = None
+    jersey_number: int
+    team: str
+    position: Optional[str] = None
+
+
+class PlayersResponse(BaseModel):
+    match_id: int
+    match_title: str
+    teams: List[str]
+    players: List[PlayerInfo]
+
+
+# --- API ENDPOINTS ---
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "service": "CoachOS API",
+        "version": "1.0.0",
+        "matches_available": len(WORLD_CUP_MATCHES)
+    }
+
+
+@app.get("/api/matches")
+async def get_matches():
+    """Get list of available World Cup 2022 matches."""
+    return {
+        "matches": [
+            {"match_id": m["match_id"], "label": m["label"], "stage": m["stage"]}
+            for m in WORLD_CUP_MATCHES
+        ]
+    }
+
+
+@app.get("/api/players", response_model=PlayersResponse)
+async def get_players(match_id: int = None):
+    """Get list of all players from the match."""
+    try:
+        _, lineups, config = get_cached_match_data(match_id)
+        
+        players = []
+        teams = list(lineups.keys())
+        
+        for team_name, team_players in lineups.items():
+            for player in team_players:
+                # Get primary position
+                positions = player.get("positions", [])
+                primary_position = positions[0].get("position") if positions else None
+                
+                # Handle nan values from pandas (convert to None)
+                nickname = player.get("player_nickname")
+                if nickname is not None and (isinstance(nickname, float) or str(nickname) == "nan"):
+                    nickname = None
+                
+                players.append(PlayerInfo(
+                    player_id=player["player_id"],
+                    player_name=player["player_name"],
+                    player_nickname=nickname,
+                    jersey_number=player["jersey_number"],
+                    team=team_name,
+                    position=primary_position,
+                ))
+        
+        # Sort by team, then jersey number
+        players.sort(key=lambda p: (p.team, p.jersey_number))
+        
+        return PlayersResponse(
+            match_id=config["match_id"],
+            match_title=config["label"],
+            teams=teams,
+            players=players,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _resolve_player_from_lineups(lineups: dict, player_name: str = None, player_id: int = None) -> tuple[Optional[int], Optional[str]]:
+    """
+    Resolve player_id and canonical player_name from lineups.
+    Handles encoding/format mismatches via exact match, nickname match, and partial match.
+    Returns (player_id, player_name) or (None, None) if not found.
+    """
+    def norm(s):
+        return (str(s or "").strip().lower())
+
+    partial_matches = []
+    for team_name, team_players in lineups.items():
+        for p in team_players:
+            pid = p.get("player_id")
+            pname = str(p.get("player_name") or "").strip()
+            pnick = p.get("player_nickname")
+            if pnick is None or isinstance(pnick, float):
+                pnick = ""
+            pnick = str(pnick).strip()
+
+            if player_id is not None:
+                try:
+                    if int(pid) == int(player_id):
+                        return (int(pid), pname or str(pid))
+                except (TypeError, ValueError):
+                    pass
+
+            if player_name:
+                inp = norm(player_name)
+                if not inp:
+                    continue
+                if norm(pname) == inp or norm(pnick) == inp:
+                    return (pid, pname)
+                if inp in norm(pname) or inp in norm(pnick):
+                    partial_matches.append((pid, pname))
+
+    if partial_matches:
+        return min(partial_matches, key=lambda x: len(x[1]))
+    return (None, None)
+
+
+@app.get("/api/player/{player_name}/analysis")
+async def get_player_analysis(player_name: str, top_n: int = 5, match_id: int = None):
+    """
+    Get detailed player analysis with highlights, lowlights, and pitch viz data.
+    
+    Args:
+        player_name: Full player name or nickname (e.g., "Lionel Messi" or "Lionel Andrés Messi Cuccittini")
+        top_n: Number of top moments to return (default 5)
+    """
+    try:
+        events, lineups, _ = get_cached_match_data(match_id)
+
+        # Decode URL-encoded characters
+        player_name = unquote(player_name)
+
+        # Resolve player_id from lineups (handles encoding/name variants)
+        player_id, canonical_name = _resolve_player_from_lineups(lineups, player_name=player_name)
+
+        if player_id is None or canonical_name is None:
+            raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found in match roster")
+
+        result = get_player_analysis_with_viz(
+            events,
+            canonical_name,
+            home_team="Argentina",
+            top_n=top_n,
+            player_id=player_id,
+        )
+
+        if "error" in result and not result.get("player_did_not_play"):
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/player/id/{player_id:int}/analysis")
+async def get_player_analysis_by_id(player_id: int, top_n: int = 5, match_id: int = None):
+    """
+    Get player analysis by player_id (most reliable - use when name matching fails).
+    """
+    try:
+        events, lineups, _ = get_cached_match_data(match_id)
+        _, canonical_name = _resolve_player_from_lineups(lineups, player_id=player_id)
+
+        if canonical_name is None:
+            raise HTTPException(status_code=404, detail=f"Player ID {player_id} not found in match roster")
+
+        result = get_player_analysis_with_viz(
+            events, canonical_name, home_team="Argentina", top_n=top_n, player_id=player_id
+        )
+        if "error" in result and not result.get("player_did_not_play"):
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/match/highlights")
+async def get_match_highlights_endpoint(top_n: int = 10, match_id: int = None):
+    """Get top highlights from the entire match."""
+    try:
+        events, _, config = get_cached_match_data(match_id)
+        highlights = get_match_highlights(events, home_team="Argentina", top_n=top_n)
+        
+        # Add pitch_viz_data to each highlight
+        events_list = list(events.values())
+        for highlight in highlights:
+            player_name = highlight.get("player")
+            time_display = highlight.get("time_display")
+            
+            for event in events_list:
+                if (event.get("player", {}).get("name") == player_name and
+                    f"{event['minute']}:{event['second']:02d}" == time_display):
+                    viz_data = extract_pitch_viz_data(event)
+                    if viz_data:
+                        highlight["pitch_viz_data"] = viz_data
+                    break
+        
+        return {
+            "match_title": config["label"],
+            "highlights": highlights,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_match_summary_cache: Dict[int, dict] = {}
+
+
+@app.get("/api/match/summary")
+async def get_match_summary_endpoint(match_id: int = None):
+    """Get full match summary: best players, players needing improvement, team summary, team improvements."""
+    try:
+        events, lineups, config = get_cached_match_data(match_id)
+        mid = config["match_id"]
+        if mid not in _match_summary_cache:
+            home_team = next(iter(lineups.keys()), "Argentina") if lineups else "Argentina"
+            _match_summary_cache[mid] = get_match_summary(
+                events, lineups, config["label"],
+                home_team=home_team,
+                top_players_n=5,
+                improvement_players_n=5,
+            )
+        return _match_summary_cache[mid]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- EXECUTION ---
@@ -956,7 +1782,7 @@ if __name__ == "__main__":
         for i, m in enumerate(highlights, 1):
             print(f"   {i}. [{m['time_display']}] {m['description']}")
             print(f"      Score: +{m['highlight_score']:.3f} | Value: +{m['value_added']:.3f} | xT: {m['xt_delta']:+.4f}")
-            print(f"      Watch: {m['video_url']}")
+            print(f"      Watch at {m['video_time']}: {m['video_url']}")
     else:
         print("   No significant highlights recorded.")
     
@@ -965,7 +1791,7 @@ if __name__ == "__main__":
         for i, m in enumerate(lowlights, 1):
             print(f"   {i}. [{m['time_display']}] {m['description']}")
             print(f"      Score: {m['highlight_score']:.3f} | Value: {m['value_added']:.3f} | xT: {m['xt_delta']:+.4f}")
-            print(f"      Watch: {m['video_url']}")
+            print(f"      Watch at {m['video_time']}: {m['video_url']}")
     else:
         print("   No significant areas for improvement - excellent performance!")
     
@@ -985,6 +1811,7 @@ if __name__ == "__main__":
     for i, m in enumerate(match_highlights, 1):
         print(f"   {i}. [{m['time_display']}] {m['player']}")
         print(f"      {m['description']} (Score: {m['highlight_score']:.3f})")
+        print(f"      Watch at {m['video_time']}: {m['video_url']}")
     
     # Test with another player who might have more lowlights
     print("\n" + "=" * 70)

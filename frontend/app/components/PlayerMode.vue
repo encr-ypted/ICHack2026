@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { cn } from "~/utils/cn";
+import { computed, ref, onMounted, watch } from "vue";
+import PitchMap from "~/components/PitchMap.vue";
 
 const emit = defineEmits<{
   navigate: [screen: "landing" | "coach" | "player"];
@@ -7,164 +9,339 @@ const emit = defineEmits<{
 
 const { isDarkMode, toggleTheme } = useTheme();
 
-// Video source state
-type VideoSourceType = "none" | "youtube" | "upload";
-const videoSourceType = ref<VideoSourceType>("none");
-const showVideoSourceModal = ref(false);
-const youtubeUrl = ref("");
-const uploadedFileName = ref("");
-const isAnalyzing = ref(false);
-const analysisComplete = ref(false);
+// ============================================
+// API CONFIGURATION
+// ============================================
+const API_BASE = "http://localhost:8000";
 
-const openVideoSourceModal = () => {
-  showVideoSourceModal.value = true;
-};
+// ============================================
+// TYPE DEFINITIONS
+// ============================================
+interface PitchVizData {
+  action_type: "pass" | "carry" | "dribble" | "shot" | "defense";
+  player_name: string;
+  start_coords?: [number, number];
+  end_coords?: [number, number];
+  coords?: [number, number];
+  outcome: "goal" | "complete" | "incomplete" | "saved" | "blocked" | "missed" | "won" | "lost";
+  team_color?: string;
+}
 
-const selectVideoSource = (type: "youtube" | "upload") => {
-  videoSourceType.value = type;
-};
+interface PlayerPosition {
+  x: number;
+  y: number;
+  type: string;
+}
 
-const handleFileUpload = (event: Event) => {
-  const target = event.target as HTMLInputElement;
-  if (target.files && target.files[0]) {
-    uploadedFileName.value = target.files[0].name;
+interface Moment {
+  time_display: string;
+  event_type: string;
+  description: string;
+  highlight_score: number;
+  value_added: number;
+  xt_delta: number;
+  video_url: string;
+  video_time: string;
+  period: number;
+  minute: number;
+  pitch_viz_data?: PitchVizData;
+}
+
+interface PlayerStats {
+  name: string;
+  total_highlight_score: number;
+  total_value_added: number;
+  total_actions: number;
+  positive_contributions: number;
+  negative_contributions: number;
+  highlights_count: number;
+  lowlights_count: number;
+  pass_accuracy: string;
+  shots: number;
+  goals: number;
+}
+
+interface PlayerInfo {
+  player_id: number;
+  player_name: string;
+  player_nickname: string | null;
+  jersey_number: number;
+  team: string;
+  position: string | null;
+}
+
+interface PlayerAnalysis {
+  player_name: string;
+  stats: PlayerStats;
+  top_highlights: Moment[];
+  areas_for_improvement: Moment[];
+  all_positions: PlayerPosition[];
+  player_summary?: string;
+  player_did_not_play?: boolean;
+  what_went_well?: string[];
+  what_to_work_on?: string[];
+  even_better_if?: string[];
+}
+
+interface MatchSummary {
+  match_title: string;
+  match_summary: string;
+  best_players: { player_name: string; team: string; net_impact: number; goals: number; highlights_count: number }[];
+  players_needing_improvement: { player_name: string; team: string; net_impact: number; lowlights_count: number; top_issue: string }[];
+  team_improvements: string[];
+  total_goals: number;
+  players_analyzed: number;
+}
+
+// ============================================
+// STATE
+// ============================================
+// Matches from API
+interface MatchOption {
+  match_id: number;
+  label: string;
+  stage: string;
+}
+const matches = ref<MatchOption[]>([]);
+const selectedMatchId = ref<number | null>(null);
+const isLoadingMatches = ref(false);
+
+// Players list from API
+const players = ref<PlayerInfo[]>([]);
+const selectedPlayerName = ref<string>("");
+const selectedTeam = ref<string>("Argentina");
+const isLoadingPlayers = ref(false);
+const isLoadingAnalysis = ref(false);
+const analysisError = ref<string | null>(null);
+
+// Player analysis data
+const playerAnalysis = ref<PlayerAnalysis | null>(null);
+
+// Active action for pitch visualization
+const activeHighlightVizData = ref<PitchVizData | null>(null);
+
+// All positions for heat map
+const allPositions = ref<PlayerPosition[]>([]);
+
+// Match summary (whole-team view)
+const matchSummary = ref<MatchSummary | null>(null);
+const isLoadingMatchSummary = ref(false);
+
+// Computed: filtered players by team
+const filteredPlayers = computed(() => {
+  return players.value.filter(p => p.team === selectedTeam.value);
+});
+
+// Computed: available teams
+const teams = computed(() => {
+  const teamSet = new Set(players.value.map(p => p.team));
+  return Array.from(teamSet);
+});
+
+// Computed: current player display name
+const currentPlayerDisplay = computed(() => {
+  const player = players.value.find(p => p.player_name === selectedPlayerName.value);
+  if (player) {
+    return player.player_nickname || player.player_name.split(" ").slice(-1)[0];
   }
-};
+  return "Select Player";
+});
 
-const startAnalysis = () => {
-  if (
-    (videoSourceType.value === "youtube" && youtubeUrl.value.trim()) ||
-    (videoSourceType.value === "upload" && uploadedFileName.value)
-  ) {
-    isAnalyzing.value = true;
-    showVideoSourceModal.value = false;
+// Computed: performance breakdown metrics derived from backend stats
+const performanceBreakdown = computed(() => {
+  const stats = playerAnalysis.value?.stats;
+  if (!stats) return null;
 
-    // Simulate analysis
-    setTimeout(() => {
-      isAnalyzing.value = false;
-      analysisComplete.value = true;
-    }, 3000);
+  const total = stats.total_actions || 1;
+  const hasPassData = stats.pass_accuracy && stats.pass_accuracy !== "N/A";
+  const passPct = hasPassData ? parseInt(stats.pass_accuracy, 10) || 0 : null;
+
+  return {
+    positiveImpact: Math.min(10, ((stats.positive_contributions || 0) / total) * 10),
+    ballRetention: Math.max(0, 10 - ((stats.negative_contributions || 0) / total) * 10),
+    passReliability: passPct !== null ? passPct / 10 : null,
+    highlightDensity: Math.min(10, ((stats.highlights_count || 0) / total) * 25),
+    netValue: Math.min(10, Math.max(0, ((stats.total_value_added || 0) + 2) / 0.7)),
+  };
+});
+
+// Computed: moments (highlights + lowlights combined and sorted)
+const criticalMoments = computed(() => {
+  if (!playerAnalysis.value) return [];
+  
+  const highlights = (playerAnalysis.value.top_highlights || []).map(h => ({
+    ...h,
+    impact: "positive" as const,
+    xTGained: h.value_added,
+  }));
+  
+  const lowlights = (playerAnalysis.value.areas_for_improvement || []).map(l => ({
+    ...l,
+    impact: "negative" as const,
+    xTLost: l.value_added,
+  }));
+  
+  // Combine and sort by minute
+  return [...highlights, ...lowlights].sort((a, b) => b.minute - a.minute);
+});
+
+// ============================================
+// API FUNCTIONS
+// ============================================
+async function fetchMatches() {
+  isLoadingMatches.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/matches`);
+    if (!response.ok) throw new Error("Failed to fetch matches");
+    const data = await response.json();
+    matches.value = data.matches;
+    if (data.matches?.length > 0 && !selectedMatchId.value) {
+      selectedMatchId.value = data.matches[0].match_id;
+    }
+  } catch (error) {
+    console.error("Error fetching matches:", error);
+    analysisError.value = "Failed to connect to backend.";
+  } finally {
+    isLoadingMatches.value = false;
   }
+}
+
+async function fetchPlayers() {
+  if (selectedMatchId.value == null) return;
+  isLoadingPlayers.value = true;
+  analysisError.value = null;
+  try {
+    const response = await fetch(`${API_BASE}/api/players?match_id=${selectedMatchId.value}`);
+    if (!response.ok) throw new Error("Failed to fetch players");
+    
+    const data = await response.json();
+    players.value = data.players;
+    
+    // Auto-select first player from first team
+    const firstTeam = data.teams?.[0];
+    const firstPlayer = data.players?.find((p: PlayerInfo) => p.team === firstTeam);
+    if (firstPlayer) {
+      selectedPlayerName.value = firstPlayer.player_name;
+      selectedTeam.value = firstTeam;
+    }
+  } catch (error) {
+    console.error("Error fetching players:", error);
+    analysisError.value = "Failed to fetch players for this match.";
+  } finally {
+    isLoadingPlayers.value = false;
+  }
+}
+
+async function fetchPlayerAnalysis(playerName: string, playerId?: number) {
+  if (!playerName) return;
+  
+  isLoadingAnalysis.value = true;
+  analysisError.value = null;
+  
+  try {
+    const matchParam = selectedMatchId.value != null ? `&match_id=${selectedMatchId.value}` : "";
+    // Prefer player_id endpoint (avoids encoding/name matching issues)
+    const url = playerId != null
+      ? `${API_BASE}/api/player/id/${playerId}/analysis?top_n=5${matchParam}`
+      : `${API_BASE}/api/player/${encodeURIComponent(playerName)}/analysis?top_n=5${matchParam}`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to fetch analysis");
+    }
+    
+    const data: PlayerAnalysis = await response.json();
+    playerAnalysis.value = data;
+    allPositions.value = data.all_positions || [];
+    
+    // Set first highlight/lowlight as active on map, or clear if none
+    const firstMoment = data.top_highlights?.[0] || data.areas_for_improvement?.[0];
+    if (firstMoment) {
+      activeHighlightVizData.value = firstMoment.pitch_viz_data || makeFallbackVizData(firstMoment);
+    } else {
+      activeHighlightVizData.value = null;
+    }
+  } catch (error: any) {
+    console.error("Error fetching player analysis:", error);
+    analysisError.value = error.message;
+    playerAnalysis.value = null;
+  } finally {
+    isLoadingAnalysis.value = false;
+  }
+}
+
+// Show action on the pitch map
+// Create fallback pitch_viz_data when API doesn't provide it (from allPositions or moment index)
+function makeFallbackVizData(moment: Moment): PitchVizData {
+  const positions = allPositions.value;
+  const idx = (moment.minute || 0) % Math.max(1, positions.length);
+  const pos = positions[idx] || { x: 60, y: 40, type: "Pass" };
+  return {
+    action_type: "other",
+    player_name: moment.event_type || "Action",
+    coords: [pos.x, pos.y],
+    outcome: moment.impact === "positive" ? "complete" : "incomplete",
+    team_color: moment.impact === "positive" ? "#22c55e" : "#f59e0b",
+  };
+}
+
+const showOnMap = (moment: Moment) => {
+  const viz = moment.pitch_viz_data || makeFallbackVizData(moment);
+  activeHighlightVizData.value = viz;
 };
 
-const resetAnalysis = () => {
-  videoSourceType.value = "none";
-  youtubeUrl.value = "";
-  uploadedFileName.value = "";
-  analysisComplete.value = false;
-};
+// Watch for player selection changes
+watch(selectedPlayerName, (newName) => {
+  if (newName) {
+    const player = players.value.find((p) => p.player_name === newName);
+    fetchPlayerAnalysis(newName, player?.player_id);
+  }
+});
 
-const criticalMoments = [
-  {
-    id: 1,
-    time: "72:15",
-    title: "Turnover in Final Third",
-    description:
-      "Lost possession under pressure from two defenders. Should have played a simple pass backwards to maintain possession.",
-    videoUrl: "https://youtube.com/watch?v=example",
-    timestamp: "4335",
-    impact: "negative" as const,
-    xTLost: -0.18,
-  },
-  {
-    id: 2,
-    time: "68:42",
-    title: "Successful Progressive Run",
-    description:
-      "Excellent dribble through midfield created space for the attack. Good scanning before receiving the ball.",
-    videoUrl: "https://youtube.com/watch?v=example",
-    timestamp: "4122",
-    impact: "positive" as const,
-    xTGained: 0.24,
-  },
-  {
-    id: 3,
-    time: "61:28",
-    title: "Missed Finishing Opportunity",
-    description:
-      "Shot from edge of box flew over the bar. Need to focus on composure and technique in high-pressure situations.",
-    videoUrl: "https://youtube.com/watch?v=example",
-    timestamp: "3688",
-    impact: "negative" as const,
-    xTLost: -0.31,
-  },
-  {
-    id: 4,
-    time: "54:10",
-    title: "Key Defensive Recovery",
-    description:
-      "Outstanding recovery run to win back possession in dangerous area. Shows excellent work rate and tactical awareness.",
-    videoUrl: "https://youtube.com/watch?v=example",
-    timestamp: "3250",
-    impact: "positive" as const,
-    xTGained: 0.15,
-  },
-  {
-    id: 5,
-    time: "48:33",
-    title: "Poor First Touch",
-    description:
-      "Heavy first touch gave away possession in transition. Work on receiving under pressure with better body positioning.",
-    videoUrl: "https://youtube.com/watch?v=example",
-    timestamp: "2913",
-    impact: "negative" as const,
-    xTLost: -0.12,
-  },
-];
+// Watch for team changes - auto-select first player
+watch(selectedTeam, (newTeam) => {
+  const firstPlayer = players.value.find(p => p.team === newTeam);
+  if (firstPlayer) {
+    selectedPlayerName.value = firstPlayer.player_name;
+  }
+});
 
-const weeklyDrills = [
-  {
-    day: "Monday",
-    title: "Scanning Drill: 360° Awareness",
-    objective: "Improve pre-reception scanning to identify pressure",
-    reps: "4 sets × 8 minutes",
-    success: "Complete 30+ scans per set with accurate decision-making",
-  },
-  {
-    day: "Tuesday",
-    title: "First Touch Under Pressure",
-    objective: "Develop composure receiving with defenders close",
-    reps: "3 sets × 10 minutes",
-    success: "Maintain possession in 80% of contested situations",
-  },
-  {
-    day: "Wednesday",
-    title: "Finishing: Box Composure",
-    objective: "Practice shooting technique under match pressure",
-    reps: "5 sets × 15 shots",
-    success: "Hit target 70%+ with proper technique",
-  },
-  {
-    day: "Thursday",
-    title: "Recovery Run Conditioning",
-    objective: "Build stamina for defensive transitions",
-    reps: "6 sprints × 40 metres",
-    success: "Complete all sprints under 6 seconds",
-  },
-  {
-    day: "Friday",
-    title: "Decision Making: Pass or Dribble",
-    objective: "Improve choice-making in final third",
-    reps: "4 sets × 12 minutes",
-    success: "Make correct decision 85%+ of the time",
-  },
-  {
-    day: "Saturday",
-    title: "Small-Sided Game: Apply Learning",
-    objective: "Implement all weekly focuses in match context",
-    reps: "3 games × 15 minutes",
-    success: "Demonstrate improved scanning and composure",
-  },
-  {
-    day: "Sunday",
-    title: "Recovery & Video Review",
-    objective: "Rest and analyse your progress",
-    reps: "Light stretching + film session",
-    success: "Identify 3 areas of improvement for next week",
-  },
-];
+// Watch for match changes - refetch players and match summary
+watch(selectedMatchId, (newId) => {
+  if (newId) {
+    fetchPlayers();
+    fetchMatchSummary();
+  }
+});
 
-const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
+async function fetchMatchSummary() {
+  if (selectedMatchId.value == null) return;
+  isLoadingMatchSummary.value = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/match/summary?match_id=${selectedMatchId.value}`);
+    if (res.ok) {
+      matchSummary.value = await res.json();
+    } else {
+      matchSummary.value = null;
+    }
+  } catch {
+    matchSummary.value = null;
+  } finally {
+    isLoadingMatchSummary.value = false;
+  }
+}
+
+// ============================================
+// LIFECYCLE
+// ============================================
+onMounted(() => {
+  fetchMatches();
+});
+
+
+
 </script>
 
 <template>
@@ -248,21 +425,29 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 :class="
                   cn('text-sm', isDarkMode ? 'text-white/70' : 'text-gray-600')
                 "
-                >Player:</span
+                >Match:</span
               >
               <select
+                v-model="selectedMatchId"
+                :disabled="isLoadingMatches"
                 :class="
                   cn(
-                    'border rounded-lg px-3 py-2 text-sm',
+                    'border rounded-lg px-3 py-2 text-sm min-w-[220px]',
                     isDarkMode
                       ? 'bg-[#12141f] border-white/10 text-white'
-                      : 'bg-white border-gray-300 text-gray-900'
+                      : 'bg-white border-gray-300 text-gray-900',
+                    isLoadingMatches ? 'opacity-50 cursor-wait' : ''
                   )
                 "
               >
-                <option>Marcus Rashford</option>
-                <option>Bukayo Saka</option>
-                <option>Phil Foden</option>
+                <option v-if="isLoadingMatches" :value="null">Loading matches...</option>
+                <option
+                  v-for="m in matches"
+                  :key="m.match_id"
+                  :value="m.match_id"
+                >
+                  {{ m.label }}
+                </option>
               </select>
             </div>
 
@@ -271,9 +456,10 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 :class="
                   cn('text-sm', isDarkMode ? 'text-white/70' : 'text-gray-600')
                 "
-                >Match:</span
+                >Team:</span
               >
               <select
+                v-model="selectedTeam"
                 :class="
                   cn(
                     'border rounded-lg px-3 py-2 text-sm',
@@ -283,15 +469,44 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <option>Arsenal vs Man City - 20 Jan 2026</option>
-                <option>Chelsea vs Arsenal - 13 Jan 2026</option>
-                <option>Arsenal vs Spurs - 06 Jan 2026</option>
+                <option v-for="team in teams" :key="team" :value="team">{{ team }}</option>
               </select>
             </div>
 
-            <!-- Video Source Status -->
+            <div class="flex items-center gap-2">
+              <span
+                :class="
+                  cn('text-sm', isDarkMode ? 'text-white/70' : 'text-gray-600')
+                "
+                >Player:</span
+              >
+              <select
+                v-model="selectedPlayerName"
+                :disabled="isLoadingPlayers"
+                :class="
+                  cn(
+                    'border rounded-lg px-3 py-2 text-sm min-w-[200px]',
+                    isDarkMode
+                      ? 'bg-[#12141f] border-white/10 text-white'
+                      : 'bg-white border-gray-300 text-gray-900',
+                    isLoadingPlayers ? 'opacity-50 cursor-wait' : ''
+                  )
+                "
+              >
+                <option v-if="isLoadingPlayers" value="">Loading...</option>
+                <option 
+                  v-for="player in filteredPlayers" 
+                  :key="player.player_id" 
+                  :value="player.player_name"
+                >
+                  #{{ player.jersey_number }} {{ player.player_nickname || player.player_name.split(' ').slice(-1)[0] }}
+                </option>
+              </select>
+            </div>
+
+            <!-- Match loaded indicator -->
             <div
-              v-if="analysisComplete"
+              v-if="selectedMatchId && matches.length > 0"
               :class="
                 cn(
                   'flex items-center gap-2 px-3 py-2 rounded-lg border',
@@ -302,7 +517,7 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
               "
             >
               <Icon
-                name="lucide:check-circle-2"
+                name="lucide:trophy"
                 class="w-4 h-4 text-emerald-400"
               />
               <span
@@ -313,69 +528,9 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                {{
-                  videoSourceType === "youtube"
-                    ? "YouTube Video"
-                    : uploadedFileName
-                }}
-              </span>
-              <button
-                @click="resetAnalysis"
-                :class="
-                  cn(
-                    'ml-2 p-1 rounded hover:bg-white/10',
-                    isDarkMode ? 'text-white/50' : 'text-gray-400'
-                  )
-                "
-              >
-                <Icon name="lucide:x" class="w-3 h-3" />
-              </button>
-            </div>
-            <div
-              v-else-if="isAnalyzing"
-              :class="
-                cn(
-                  'flex items-center gap-2 px-3 py-2 rounded-lg border',
-                  isDarkMode
-                    ? 'bg-blue-500/10 border-blue-500/30'
-                    : 'bg-blue-50 border-blue-200'
-                )
-              "
-            >
-              <Icon
-                name="lucide:loader-2"
-                class="w-4 h-4 text-blue-400 animate-spin"
-              />
-              <span
-                :class="
-                  cn('text-sm', isDarkMode ? 'text-blue-300' : 'text-blue-700')
-                "
-              >
-                Analyzing video...
+                {{ matches.find(m => m.match_id === selectedMatchId)?.label || 'Match selected' }}
               </span>
             </div>
-
-            <UiButton
-              v-if="!analysisComplete && !isAnalyzing"
-              class="bg-emerald-500 hover:bg-emerald-600 text-white"
-              @click="openVideoSourceModal"
-            >
-              <Icon name="lucide:video" class="w-4 h-4 mr-2" />
-              Add Video Source
-            </UiButton>
-            <UiButton
-              v-else-if="analysisComplete"
-              variant="outline"
-              :class="
-                isDarkMode
-                  ? 'border-white/20 text-white/70'
-                  : 'border-gray-300 text-gray-600'
-              "
-              @click="openVideoSourceModal"
-            >
-              <Icon name="lucide:refresh-cw" class="w-4 h-4 mr-2" />
-              New Analysis
-            </UiButton>
           </div>
         </div>
       </div>
@@ -398,12 +553,15 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div
-                class="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center"
+                :class="cn(
+                  'w-10 h-10 rounded-full flex items-center justify-center',
+                  selectedTeam === 'Argentina' ? 'bg-blue-500/20' : 'bg-red-500/20'
+                )"
               >
-                <span class="text-xl font-bold">MR</span>
+                <span class="text-xl font-bold">{{ currentPlayerDisplay.substring(0, 2).toUpperCase() }}</span>
               </div>
               <div>
-                <div class="font-semibold">Marcus Rashford</div>
+                <div class="font-semibold">{{ currentPlayerDisplay }}</div>
                 <div
                   :class="
                     cn(
@@ -412,23 +570,39 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                     )
                   "
                 >
-                  Forward · #10
+                  {{ selectedTeam }} · #{{ filteredPlayers.find(p => p.player_name === selectedPlayerName)?.jersey_number || '?' }}
                 </div>
               </div>
             </div>
             <UiBadge
+              v-if="isLoadingAnalysis"
               variant="outline"
               :class="
                 cn(
                   'text-xs',
                   isDarkMode
-                    ? 'border-purple-500/30 text-purple-400'
-                    : 'border-purple-300 text-purple-600'
+                    ? 'border-blue-500/30 text-blue-400'
+                    : 'border-blue-300 text-blue-600'
                 )
               "
             >
-              <Icon name="lucide:flask-conical" class="w-3 h-3 mr-1" />
-              Sample Data
+              <Icon name="lucide:loader-2" class="w-3 h-3 mr-1 animate-spin" />
+              Loading...
+            </UiBadge>
+            <UiBadge
+              v-else
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-emerald-500/30 text-emerald-400'
+                    : 'border-emerald-300 text-emerald-600'
+                )
+              "
+            >
+              <Icon name="lucide:sparkles" class="w-3 h-3 mr-1" />
+              ML Analyzed
             </UiBadge>
           </div>
 
@@ -452,62 +626,56 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             >
               The Player Truth Report
             </h4>
-            <p
-              :class="
-                cn(
-                  'text-sm leading-relaxed mb-4',
-                  isDarkMode ? 'text-white/80' : 'text-gray-700'
-                )
-              "
-            >
-              Marcus, you were
-              <span
+            <div v-if="!playerAnalysis" :class="cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')">
+              Select a player to see their match summary.
+            </div>
+            <div v-else class="space-y-4">
+              <p
                 :class="
                   cn(
-                    'font-semibold',
-                    isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                    'text-sm leading-relaxed',
+                    isDarkMode ? 'text-white/80' : 'text-gray-700'
                   )
                 "
-                >elite in transition</span
               >
-              today. Your progressive runs in the first half created significant
-              threat, and your work rate on defensive recovery was outstanding.
-            </p>
-            <p
-              :class="
-                cn(
-                  'text-sm leading-relaxed',
-                  isDarkMode ? 'text-white/80' : 'text-gray-700'
-                )
-              "
-            >
-              However, your decision-making in the final third needs work. You
-              lost possession
-              <span
-                :class="
-                  cn(
-                    'font-semibold',
-                    isDarkMode ? 'text-amber-400' : 'text-amber-600'
-                  )
-                "
-                >3 times under pressure</span
-              >—each time choosing the risky option when a simple pass was
-              available. Let's focus on composure this week.
-            </p>
+                {{ playerAnalysis.player_summary || 'No summary available.' }}
+              </p>
+              <div v-if="!playerAnalysis.player_did_not_play && (playerAnalysis.what_went_well?.length || playerAnalysis.what_to_work_on?.length || playerAnalysis.even_better_if?.length)">
+                <div v-if="playerAnalysis.what_went_well?.length" class="mb-3">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <Icon name="lucide:check-circle-2" class="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-emerald-400' : 'text-emerald-600')">What went well</span>
+                  </div>
+                  <ul class="list-disc list-inside text-sm space-y-1" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                    <li v-for="(item, i) in playerAnalysis.what_went_well" :key="i">{{ item }}</li>
+                  </ul>
+                </div>
+                <div v-if="playerAnalysis.what_to_work_on?.length" class="mb-3">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <Icon name="lucide:alert-circle" class="w-4 h-4 text-amber-400 flex-shrink-0" />
+                    <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-amber-400' : 'text-amber-600')">What to work on</span>
+                  </div>
+                  <ul class="list-disc list-inside text-sm space-y-1" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                    <li v-for="(item, i) in playerAnalysis.what_to_work_on" :key="i">{{ item }}</li>
+                  </ul>
+                </div>
+                <div v-if="playerAnalysis.even_better_if?.length">
+                  <div class="flex items-center gap-2 mb-1.5">
+                    <Icon name="lucide:sparkles" class="w-4 h-4 text-cyan-400 flex-shrink-0" />
+                    <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-cyan-400' : 'text-cyan-600')">Even better if</span>
+                  </div>
+                  <ul class="list-disc list-inside text-sm space-y-1" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                    <li v-for="(item, i) in playerAnalysis.even_better_if" :key="i">{{ item }}</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="flex items-center gap-2 text-xs text-white/50 mb-4">
-            <Icon name="lucide:volume-2" class="w-3 h-3" />
-            <span>Analysed by Claude 3.5 Sonnet</span>
+            <Icon name="lucide:bar-chart-2" class="w-3 h-3" />
+            <span>Data-driven analysis from match events</span>
           </div>
-
-          <UiButton
-            variant="outline"
-            class="w-full border-purple-500/30 text-purple-400 hover:bg-purple-500/10"
-          >
-            <Icon name="lucide:play" class="w-4 h-4 mr-2" />
-            Play Full Audio Summary
-          </UiButton>
         </UiCard>
 
         <!-- Key Metrics -->
@@ -529,21 +697,24 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 cn(
                   'text-xs',
                   isDarkMode
-                    ? 'border-white/20 text-white/50'
-                    : 'border-gray-200 text-gray-400'
+                    ? 'border-emerald-500/30 text-emerald-400'
+                    : 'border-emerald-200 text-emerald-600'
                 )
               "
             >
-              Placeholder
+              Live Data
             </UiBadge>
           </div>
 
           <div class="grid grid-cols-2 gap-4">
+            <!-- Net Impact Score -->
             <div
               :class="
                 cn(
                   'rounded-lg p-4',
-                  isDarkMode ? 'bg-[#0a0b14]' : 'bg-emerald-50'
+                  (playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0
+                    ? isDarkMode ? 'bg-[#0a0b14]' : 'bg-emerald-50'
+                    : isDarkMode ? 'bg-[#0a0b14]' : 'bg-amber-50'
                 )
               "
             >
@@ -551,36 +722,42 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 :class="
                   cn(
                     'text-2xl font-bold mb-1',
-                    isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                    (playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0
+                      ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      : isDarkMode ? 'text-amber-400' : 'text-amber-600'
                   )
                 "
               >
-                8.2
+                {{ playerAnalysis?.stats?.total_highlight_score?.toFixed(1) ?? '—' }}
               </div>
               <div
                 :class="
                   cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
                 "
               >
-                Impact Score
+                Net Impact Score
               </div>
               <div class="flex items-center gap-1 mt-2">
                 <Icon
-                  name="lucide:trending-up"
-                  class="w-3 h-3 text-emerald-400"
+                  :name="(playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0 ? 'lucide:trending-up' : 'lucide:trending-down'"
+                  :class="(playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0 ? 'w-3 h-3 text-emerald-400' : 'w-3 h-3 text-amber-400'"
                 />
                 <span
                   :class="
                     cn(
                       'text-xs',
-                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      (playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : isDarkMode ? 'text-amber-400' : 'text-amber-600'
                     )
                   "
-                  >+1.4 vs avg</span
                 >
+                  {{ (playerAnalysis?.stats?.total_highlight_score ?? 0) >= 0 ? 'Positive' : 'Negative' }}
+                </span>
               </div>
             </div>
 
+            <!-- Total Actions -->
             <div
               :class="
                 cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-blue-50')
@@ -594,37 +771,39 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                0.52
+                {{ playerAnalysis?.stats?.total_actions ?? '—' }}
               </div>
               <div
                 :class="
                   cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
                 "
               >
-                xT Generated
+                Total Actions
               </div>
               <div class="flex items-center gap-1 mt-2">
                 <Icon
-                  name="lucide:trending-up"
-                  class="w-3 h-3 text-emerald-400"
+                  name="lucide:activity"
+                  class="w-3 h-3 text-blue-400"
                 />
                 <span
                   :class="
                     cn(
                       'text-xs',
-                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      isDarkMode ? 'text-blue-400' : 'text-blue-600'
                     )
                   "
-                  >Top 15%</span
                 >
+                  +{{ playerAnalysis?.stats?.positive_contributions ?? 0 }} / -{{ playerAnalysis?.stats?.negative_contributions ?? 0 }}
+                </span>
               </div>
             </div>
 
+            <!-- Goals/Shots -->
             <div
               :class="
                 cn(
                   'rounded-lg p-4',
-                  isDarkMode ? 'bg-[#0a0b14]' : 'bg-amber-50'
+                  isDarkMode ? 'bg-[#0a0b14]' : 'bg-purple-50'
                 )
               "
             >
@@ -632,36 +811,38 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 :class="
                   cn(
                     'text-2xl font-bold mb-1',
-                    isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                    isDarkMode ? 'text-purple-400' : 'text-purple-600'
                   )
                 "
               >
-                3
+                {{ playerAnalysis?.stats?.goals ?? 0 }}
               </div>
               <div
                 :class="
                   cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
                 "
               >
-                Turnovers (Pressure)
+                Goals
               </div>
               <div class="flex items-center gap-1 mt-2">
                 <Icon
-                  name="lucide:trending-down"
-                  class="w-3 h-3 text-amber-400"
+                  name="lucide:target"
+                  class="w-3 h-3 text-purple-400"
                 />
                 <span
                   :class="
                     cn(
                       'text-xs',
-                      isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                      isDarkMode ? 'text-purple-400' : 'text-purple-600'
                     )
                   "
-                  >Needs work</span
                 >
+                  {{ playerAnalysis?.stats?.shots ?? 0 }} shots
+                </span>
               </div>
             </div>
 
+            <!-- Pass Accuracy -->
             <div
               :class="
                 cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-gray-50')
@@ -675,20 +856,96 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                78%
+                {{ playerAnalysis?.stats?.pass_accuracy ?? '—' }}
               </div>
               <div
                 :class="
                   cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
                 "
               >
-                Pass Accuracy (Final Third)
+                Pass Accuracy
               </div>
               <div class="flex items-center gap-1 mt-2">
                 <Icon
-                  name="lucide:trending-down"
-                  class="w-3 h-3 text-amber-400"
+                  name="lucide:arrow-right-circle"
+                  class="w-3 h-3 text-gray-400"
                 />
+                <span
+                  :class="
+                    cn(
+                      'text-xs',
+                      isDarkMode ? 'text-white/50' : 'text-gray-500'
+                    )
+                  "
+                >
+                  ML-analyzed
+                </span>
+              </div>
+            </div>
+
+            <!-- Highlights Count -->
+            <div
+              :class="
+                cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-emerald-50')
+              "
+            >
+              <div
+                :class="
+                  cn(
+                    'text-2xl font-bold mb-1',
+                    isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                  )
+                "
+              >
+                {{ playerAnalysis?.stats?.highlights_count ?? '—' }}
+              </div>
+              <div
+                :class="
+                  cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
+                "
+              >
+                Key Highlights
+              </div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:star" class="w-3 h-3 text-emerald-400" />
+                <span
+                  :class="
+                    cn(
+                      'text-xs',
+                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                    )
+                  "
+                >
+                  Positive moments
+                </span>
+              </div>
+            </div>
+
+            <!-- Lowlights Count -->
+            <div
+              :class="
+                cn('rounded-lg p-4', isDarkMode ? 'bg-[#0a0b14]' : 'bg-amber-50')
+              "
+            >
+              <div
+                :class="
+                  cn(
+                    'text-2xl font-bold mb-1',
+                    isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                  )
+                "
+              >
+                {{ playerAnalysis?.stats?.lowlights_count ?? '—' }}
+              </div>
+              <div
+                :class="
+                  cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
+                "
+              >
+                Areas to Improve
+              </div>
+              <div class="flex items-center gap-1 mt-2">
+                <Icon name="lucide:alert-triangle" class="w-3 h-3 text-amber-400" />
                 <span
                   :class="
                     cn(
@@ -696,8 +953,9 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                       isDarkMode ? 'text-amber-400' : 'text-amber-600'
                     )
                   "
-                  >Below avg</span
                 >
+                  Focus points
+                </span>
               </div>
             </div>
           </div>
@@ -722,29 +980,54 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 cn(
                   'text-xs',
                   isDarkMode
-                    ? 'border-white/20 text-white/50'
-                    : 'border-gray-200 text-gray-400'
+                    ? 'border-emerald-500/30 text-emerald-400'
+                    : 'border-emerald-200 text-emerald-600'
                 )
               "
             >
-              Placeholder
+              From Backend
             </UiBadge>
           </div>
 
-          <div class="space-y-4">
+          <div v-if="!performanceBreakdown" class="space-y-4">
+            <div
+              v-for="i in 5"
+              :key="i"
+              :class="cn('animate-pulse', isDarkMode ? 'bg-white/5' : 'bg-gray-100')"
+              class="h-12 rounded-lg"
+            ></div>
+            <p
+              :class="
+                cn('text-xs text-center', isDarkMode ? 'text-white/40' : 'text-gray-400')
+              "
+            >
+              Select a player to see breakdown
+            </p>
+          </div>
+
+          <div v-else-if="playerAnalysis?.player_did_not_play" :class="cn('p-4 rounded-lg border text-center', isDarkMode ? 'bg-[#0a0b14] border-white/10' : 'bg-gray-50 border-gray-200')">
+            <Icon name="lucide:user-x" class="w-8 h-8 mx-auto mb-2 text-amber-400" />
+            <p :class="cn('text-sm', isDarkMode ? 'text-white/70' : 'text-gray-600')">
+              No performance data available — player did not feature in this match.
+            </p>
+          </div>
+
+          <div v-else class="space-y-4">
             <div>
               <div class="flex justify-between text-sm mb-2">
                 <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Attacking</span
+                  >Positive Impact Rate</span
                 >
                 <span
                   :class="
                     cn(
                       'font-semibold',
-                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      performanceBreakdown.positiveImpact >= 5
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : isDarkMode ? 'text-amber-400' : 'text-amber-600'
                     )
                   "
-                  >8.5/10</span
+                  >{{ performanceBreakdown.positiveImpact.toFixed(1) }}/10</span
                 >
               </div>
               <div
@@ -755,23 +1038,30 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <div class="h-full bg-emerald-500 w-[85%]"></div>
+                <div
+                  class="h-full bg-emerald-500 transition-all"
+                  :style="{ width: `${Math.min(100, performanceBreakdown.positiveImpact * 10)}%` }"
+                ></div>
               </div>
             </div>
 
             <div>
               <div class="flex justify-between text-sm mb-2">
                 <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Defensive Work Rate</span
+                  >Ball Retention</span
                 >
                 <span
                   :class="
                     cn(
                       'font-semibold',
-                      isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      performanceBreakdown.ballRetention >= 7
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : performanceBreakdown.ballRetention >= 5
+                        ? isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                        : isDarkMode ? 'text-red-400' : 'text-red-600'
                     )
                   "
-                  >8.8/10</span
+                  >{{ performanceBreakdown.ballRetention.toFixed(1) }}/10</span
                 >
               </div>
               <div
@@ -782,23 +1072,30 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <div class="h-full bg-emerald-500 w-[88%]"></div>
+                <div
+                  class="h-full bg-emerald-500 transition-all"
+                  :style="{ width: `${Math.min(100, performanceBreakdown.ballRetention * 10)}%` }"
+                ></div>
               </div>
             </div>
 
             <div>
               <div class="flex justify-between text-sm mb-2">
                 <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Decision Making</span
+                  >Pass Reliability</span
                 >
                 <span
                   :class="
                     cn(
                       'font-semibold',
-                      isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                      performanceBreakdown.passReliability !== null && performanceBreakdown.passReliability >= 8
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : performanceBreakdown.passReliability !== null && performanceBreakdown.passReliability >= 6
+                        ? isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                        : isDarkMode ? 'text-white' : 'text-gray-900'
                     )
                   "
-                  >6.2/10</span
+                  >{{ performanceBreakdown.passReliability !== null ? `${performanceBreakdown.passReliability.toFixed(1)}/10` : 'N/A' }}</span
                 >
               </div>
               <div
@@ -809,23 +1106,28 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <div class="h-full bg-amber-500 w-[62%]"></div>
+                <div
+                  class="h-full bg-blue-500 transition-all"
+                  :style="{ width: performanceBreakdown.passReliability !== null ? `${Math.min(100, performanceBreakdown.passReliability * 10)}%` : '0%' }"
+                ></div>
               </div>
             </div>
 
             <div>
               <div class="flex justify-between text-sm mb-2">
                 <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Technical Execution</span
+                  >Highlight Density</span
                 >
                 <span
                   :class="
                     cn(
                       'font-semibold',
-                      isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                      performanceBreakdown.highlightDensity >= 5
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : isDarkMode ? 'text-white' : 'text-gray-900'
                     )
                   "
-                  >7.1/10</span
+                  >{{ performanceBreakdown.highlightDensity.toFixed(1) }}/10</span
                 >
               </div>
               <div
@@ -836,23 +1138,30 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <div class="h-full bg-amber-500 w-[71%]"></div>
+                <div
+                  class="h-full bg-purple-500 transition-all"
+                  :style="{ width: `${Math.min(100, performanceBreakdown.highlightDensity * 10)}%` }"
+                ></div>
               </div>
             </div>
 
             <div>
               <div class="flex justify-between text-sm mb-2">
                 <span :class="isDarkMode ? 'text-white/70' : 'text-gray-600'"
-                  >Positioning</span
+                  >Net Value Added</span
                 >
                 <span
                   :class="
                     cn(
                       'font-semibold',
-                      isDarkMode ? 'text-white' : 'text-gray-900'
+                      performanceBreakdown.netValue >= 5
+                        ? isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
+                        : performanceBreakdown.netValue >= 3
+                        ? isDarkMode ? 'text-amber-400' : 'text-amber-600'
+                        : isDarkMode ? 'text-white' : 'text-gray-900'
                     )
                   "
-                  >7.8/10</span
+                  >{{ performanceBreakdown.netValue.toFixed(1) }}/10</span
                 >
               </div>
               <div
@@ -863,20 +1172,76 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                   )
                 "
               >
-                <div class="h-full bg-blue-500 w-[78%]"></div>
+                <div
+                  class="h-full bg-cyan-500 transition-all"
+                  :style="{ width: `${Math.min(100, performanceBreakdown.netValue * 10)}%` }"
+                ></div>
               </div>
             </div>
           </div>
         </UiCard>
       </div>
 
-      <!-- Centre Column - Video Highlights -->
+      <!-- Centre Column - Pitch Visualization & Highlights -->
       <div class="col-span-5 space-y-6">
+        <!-- Visual Play Analysis - Pitch Map -->
+        <UiCard
+          :class="
+            cn(
+              'p-6',
+              isDarkMode
+                ? 'bg-[#12141f] border-cyan-500/30'
+                : 'bg-white border-cyan-300'
+            )
+          "
+        >
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <Icon name="lucide:map" class="w-5 h-5 text-cyan-400" />
+              <div>
+                <h3 class="font-semibold">Visual Play Analysis</h3>
+                <p
+                  :class="
+                    cn(
+                      'text-xs',
+                      isDarkMode ? 'text-white/50' : 'text-gray-500'
+                    )
+                  "
+                >
+                  Click a moment below to visualize on pitch
+                </p>
+              </div>
+            </div>
+            <UiBadge
+              variant="outline"
+              :class="
+                cn(
+                  'text-xs',
+                  isDarkMode
+                    ? 'border-cyan-500/30 text-cyan-400'
+                    : 'border-cyan-300 text-cyan-600'
+                )
+              "
+            >
+              <Icon name="lucide:crosshair" class="w-3 h-3 mr-1" />
+              StatsBomb Data
+            </UiBadge>
+          </div>
+          
+          <!-- Pitch Map Component -->
+          <PitchMap 
+            :activeAction="activeHighlightVizData" 
+            :allPositions="allPositions"
+            :isDarkMode="isDarkMode" 
+            :showHeatMap="true"
+          />
+        </UiCard>
+
         <div>
           <div class="flex items-center justify-between mb-4">
             <div>
               <h3 class="font-semibold text-lg">
-                Video-Synchronised Highlights
+                Critical Moments
               </h3>
               <p
                 :class="
@@ -888,99 +1253,151 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
             </div>
             <div class="flex items-center gap-2">
               <UiBadge
+                v-if="playerAnalysis?.player_did_not_play"
                 variant="outline"
                 :class="
                   cn(
                     'text-xs',
                     isDarkMode
-                      ? 'border-white/20 text-white/50'
-                      : 'border-gray-200 text-gray-400'
+                      ? 'border-amber-500/30 text-amber-400'
+                      : 'border-amber-300 text-amber-600'
                   )
                 "
               >
-                Sample Data
+                <Icon name="lucide:user-x" class="w-3 h-3 mr-1" />
+                Did Not Play
               </UiBadge>
-              <UiBadge variant="outline" class="border-red-500/30 text-red-400">
-                <Icon name="lucide:video" class="w-3 h-3 mr-1" />
-                YouTube Linked
+              <UiBadge variant="outline" class="border-emerald-500/30 text-emerald-400">
+                <Icon name="lucide:target" class="w-3 h-3 mr-1" />
+                ML Analyzed
               </UiBadge>
             </div>
           </div>
 
-          <div class="space-y-4">
+          <!-- Loading State -->
+          <div v-if="isLoadingAnalysis" class="space-y-3">
+            <div v-for="i in 3" :key="i" :class="cn('p-4 rounded-xl border animate-pulse', isDarkMode ? 'bg-[#12141f] border-white/10' : 'bg-gray-50 border-gray-200')">
+              <div class="flex items-center gap-3 mb-3">
+                <div :class="cn('w-8 h-8 rounded-full', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+                <div class="flex-1">
+                  <div :class="cn('h-4 rounded w-3/4 mb-2', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+                  <div :class="cn('h-3 rounded w-1/4', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+                </div>
+              </div>
+              <div :class="cn('h-3 rounded w-full mb-2', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+              <div :class="cn('h-3 rounded w-2/3', isDarkMode ? 'bg-white/10' : 'bg-gray-200')"></div>
+            </div>
+          </div>
+
+          <!-- Error State -->
+          <div v-else-if="analysisError" :class="cn('p-6 rounded-xl border text-center', isDarkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200')">
+            <Icon name="lucide:alert-triangle" class="w-8 h-8 text-red-400 mx-auto mb-2" />
+            <p :class="cn('text-sm', isDarkMode ? 'text-red-300' : 'text-red-600')">{{ analysisError }}</p>
+            <p :class="cn('text-xs mt-2', isDarkMode ? 'text-white/50' : 'text-gray-500')">
+              Make sure the backend is running: <code class="font-mono">uvicorn main:app --reload</code>
+            </p>
+          </div>
+
+          <!-- Empty State -->
+          <div v-else-if="criticalMoments.length === 0" :class="cn('p-6 rounded-xl border text-center', isDarkMode ? 'bg-[#12141f] border-white/10' : 'bg-gray-50 border-gray-200')">
+            <Icon 
+              :name="playerAnalysis?.player_did_not_play ? 'lucide:user-x' : 'lucide:inbox'" 
+              class="w-8 h-8 mx-auto mb-2" 
+              :class="playerAnalysis?.player_did_not_play ? 'text-amber-400' : 'text-gray-400'"
+            />
+            <p :class="cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')">
+              {{ playerAnalysis?.player_did_not_play 
+                ? 'This player was in the squad but did not feature in this match.' 
+                : 'No critical moments found for this player.' }}
+            </p>
+          </div>
+
+          <!-- Moments List -->
+          <div v-else class="space-y-3">
             <UiCard
-              v-for="moment in criticalMoments"
-              :key="moment.id"
+              v-for="(moment, index) in criticalMoments"
+              :key="`${moment.time_display}-${index}`"
+              @click="showOnMap(moment)"
               :class="
                 cn(
-                  'p-5 transition-all hover:scale-[1.02] cursor-pointer',
+                  'p-4 transition-all hover:scale-[1.01] cursor-pointer',
                   moment.impact === 'negative'
                     ? isDarkMode
                       ? 'bg-[#12141f] border-amber-500/30 hover:border-amber-500/50'
                       : 'bg-white border-amber-300 hover:border-amber-400'
                     : isDarkMode
                     ? 'bg-[#12141f] border-emerald-500/30 hover:border-emerald-500/50'
-                    : 'bg-white border-emerald-300 hover:border-emerald-400'
+                    : 'bg-white border-emerald-300 hover:border-emerald-400',
+                  activeHighlightVizData === moment.pitch_viz_data
+                    ? 'ring-2 ring-cyan-400/50'
+                    : ''
                 )
               "
             >
-              <div class="flex items-start justify-between mb-3">
+              <div class="flex items-start justify-between mb-2">
                 <div class="flex items-center gap-3">
                   <div
                     v-if="moment.impact === 'negative'"
-                    class="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0"
+                    class="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0"
                   >
                     <Icon
                       name="lucide:alert-circle"
-                      class="w-5 h-5 text-amber-400"
+                      class="w-4 h-4 text-amber-400"
                     />
                   </div>
                   <div
                     v-else
-                    class="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0"
+                    class="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0"
                   >
                     <Icon
                       name="lucide:check-circle-2"
-                      class="w-5 h-5 text-emerald-400"
+                      class="w-4 h-4 text-emerald-400"
                     />
                   </div>
                   <div>
-                    <div class="font-semibold">{{ moment.title }}</div>
+                    <div class="font-semibold text-sm">{{ moment.event_type }}</div>
                     <div
                       :class="
                         cn(
-                          'text-xs mt-1',
+                          'text-xs',
                           isDarkMode ? 'text-white/50' : 'text-gray-500'
                         )
                       "
                     >
-                      {{ moment.time }}
+                      {{ moment.time_display }}
                     </div>
                   </div>
                 </div>
-                <UiBadge
-                  variant="outline"
-                  :class="
-                    cn(
-                      'text-xs',
-                      moment.impact === 'negative'
-                        ? 'border-amber-500/30 text-amber-400'
-                        : 'border-emerald-500/30 text-emerald-400'
-                    )
-                  "
-                >
-                  {{
-                    moment.impact === "negative"
-                      ? `${moment.xTLost?.toFixed(2)} xT`
-                      : `+${moment.xTGained?.toFixed(2)} xT`
-                  }}
-                </UiBadge>
+                <div class="flex items-center gap-2">
+                  <UiBadge
+                    variant="outline"
+                    :class="
+                      cn(
+                        'text-xs',
+                        moment.impact === 'negative'
+                          ? 'border-amber-500/30 text-amber-400'
+                          : 'border-emerald-500/30 text-emerald-400'
+                      )
+                    "
+                  >
+                    {{ moment.highlight_score >= 0 ? '+' : '' }}{{ moment.highlight_score?.toFixed(2) }}
+                  </UiBadge>
+                  <Icon 
+                    name="lucide:crosshair" 
+                    :class="cn(
+                      'w-4 h-4',
+                      activeHighlightVizData === moment.pitch_viz_data
+                        ? 'text-cyan-400'
+                        : isDarkMode ? 'text-white/30' : 'text-gray-300'
+                    )"
+                  />
+                </div>
               </div>
 
               <p
                 :class="
                   cn(
-                    'text-sm mb-4 leading-relaxed',
+                    'text-sm leading-relaxed mb-3',
                     isDarkMode ? 'text-white/70' : 'text-gray-600'
                   )
                 "
@@ -988,80 +1405,39 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 {{ moment.description }}
               </p>
 
-              <!-- Video Preview Placeholder -->
-              <div
-                :class="
-                  cn(
-                    'rounded-lg aspect-video mb-4 border relative overflow-hidden',
-                    isDarkMode
-                      ? 'bg-[#0a0b14] border-white/10'
-                      : 'bg-gray-100 border-gray-200'
-                  )
-                "
-              >
-                <div
-                  class="absolute inset-0 bg-gradient-to-br from-emerald-900/20 to-blue-900/20"
-                ></div>
-                <div class="absolute inset-0 flex items-center justify-center">
-                  <div
-                    class="w-16 h-16 rounded-full bg-white/10 backdrop-blur flex items-center justify-center"
-                  >
-                    <Icon
-                      name="lucide:play"
-                      :class="
-                        cn(
-                          'w-8 h-8 ml-1',
-                          isDarkMode ? 'text-white/70' : 'text-gray-700'
-                        )
-                      "
-                    />
-                  </div>
-                </div>
-                <div
-                  :class="
-                    cn(
-                      'absolute bottom-3 right-3 px-2 py-1 rounded text-xs font-medium',
-                      isDarkMode
-                        ? 'bg-black/70 text-white'
-                        : 'bg-white/90 text-gray-900 border border-gray-300'
-                    )
-                  "
-                >
-                  {{ moment.time }}
-                </div>
-              </div>
-
+              <!-- FIFA+ Video Link -->
               <div class="flex gap-2">
-                <UiButton
-                  size="sm"
+                <a
+                  v-if="moment.video_url && moment.video_time"
+                  :href="moment.video_url"
+                  target="_blank"
+                  @click.stop
                   :class="
                     cn(
-                      'flex-1',
-                      moment.impact === 'negative'
-                        ? isDarkMode
-                          ? 'bg-amber-500/30 hover:bg-amber-500/40 text-amber-300 border border-amber-500/50'
-                          : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300'
-                        : isDarkMode
-                        ? 'bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/50'
-                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300'
+                      'flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
+                      isDarkMode
+                        ? 'bg-white/5 hover:bg-white/10 text-white/70 border border-white/10'
+                        : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200'
                     )
-                  "
-                  variant="outline"
-                >
-                  <Icon name="lucide:play" class="w-3 h-3 mr-2" />
-                  Jump to Timestamp
-                </UiButton>
-                <UiButton
-                  size="sm"
-                  variant="outline"
-                  :class="
-                    isDarkMode
-                      ? 'border-white/20 text-white/70 hover:bg-white/5'
-                      : 'border-gray-300 text-gray-600 hover:bg-gray-50'
                   "
                 >
                   <Icon name="lucide:external-link" class="w-3 h-3" />
-                </UiButton>
+                  Watch at {{ moment.video_time }}
+                </a>
+                <button
+                  @click.stop="showOnMap(moment)"
+                  :class="
+                    cn(
+                      'flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
+                      isDarkMode
+                        ? 'bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30'
+                        : 'bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200'
+                    )
+                  "
+                >
+                  <Icon name="lucide:map" class="w-3 h-3" />
+                  Show on Pitch
+                </button>
               </div>
             </UiCard>
           </div>
@@ -1144,9 +1520,9 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
         >
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
-              <Icon name="lucide:target" class="w-5 h-5 text-emerald-400" />
+              <Icon name="lucide:trophy" class="w-5 h-5 text-emerald-400" />
               <div>
-                <h3 class="font-semibold">1-Week Development Mission</h3>
+                <h3 class="font-semibold">Match Summary</h3>
                 <p
                   :class="
                     cn(
@@ -1155,7 +1531,7 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                     )
                   "
                 >
-                  Focus: Scanning Under Pressure
+                  {{ matchSummary?.match_title || 'Whole-team analysis' }}
                 </p>
               </div>
             </div>
@@ -1170,87 +1546,59 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
                 )
               "
             >
-              AI Generated
+              Data-driven
             </UiBadge>
           </div>
 
-          <div class="space-y-3">
-            <UiCard
-              v-for="(drill, index) in weeklyDrills"
-              :key="index"
-              :class="
-                cn(
-                  'p-4 hover:border-emerald-500/30 transition-all',
-                  isDarkMode
-                    ? 'bg-[#0a0b14] border-white/10'
-                    : 'bg-emerald-50 border-emerald-200'
-                )
-              "
-            >
-              <div class="flex items-start justify-between mb-2">
-                <div>
-                  <div
-                    :class="
-                      cn(
-                        'font-semibold text-sm',
-                        isDarkMode ? 'text-emerald-400' : 'text-emerald-600'
-                      )
-                    "
-                  >
-                    {{ drill.day }}
-                  </div>
-                  <div class="text-sm font-semibold mt-1">
-                    {{ drill.title }}
-                  </div>
-                </div>
-                <div
-                  :class="
-                    cn(
-                      'w-6 h-6 rounded border-2 flex-shrink-0',
-                      isDarkMode ? 'border-white/20' : 'border-emerald-300'
-                    )
-                  "
-                ></div>
-              </div>
-
-              <div class="space-y-2 text-xs">
-                <div>
-                  <span :class="isDarkMode ? 'text-white/50' : 'text-gray-500'"
-                    >Objective:
-                  </span>
-                  <span
-                    :class="isDarkMode ? 'text-white/70' : 'text-gray-700'"
-                    >{{ drill.objective }}</span
-                  >
-                </div>
-                <div>
-                  <span :class="isDarkMode ? 'text-white/50' : 'text-gray-500'"
-                    >Reps:
-                  </span>
-                  <span
-                    :class="isDarkMode ? 'text-white/70' : 'text-gray-700'"
-                    >{{ drill.reps }}</span
-                  >
-                </div>
-                <div>
-                  <span :class="isDarkMode ? 'text-white/50' : 'text-gray-500'"
-                    >Success:
-                  </span>
-                  <span
-                    :class="isDarkMode ? 'text-white/70' : 'text-gray-700'"
-                    >{{ drill.success }}</span
-                  >
-                </div>
-              </div>
-            </UiCard>
+          <div v-if="isLoadingMatchSummary" class="space-y-3">
+            <div v-for="i in 4" :key="i" :class="cn('h-12 rounded-lg animate-pulse', isDarkMode ? 'bg-white/5' : 'bg-gray-100')"></div>
           </div>
 
-          <UiButton
-            class="w-full mt-4 bg-emerald-500 hover:bg-emerald-600 text-white"
-          >
-            <Icon name="lucide:check-circle-2" class="w-4 h-4 mr-2" />
-            Start Development Mission
-          </UiButton>
+          <div v-else-if="matchSummary" class="space-y-4">
+            <p :class="cn('text-sm leading-relaxed', isDarkMode ? 'text-white/80' : 'text-gray-700')">
+              {{ matchSummary.match_summary }}
+            </p>
+
+            <div v-if="matchSummary.best_players?.length">
+              <div class="flex items-center gap-2 mb-2">
+                <Icon name="lucide:trending-up" class="w-4 h-4 text-emerald-400" />
+                <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-emerald-400' : 'text-emerald-600')">Best performers</span>
+              </div>
+              <ul class="space-y-1.5 text-sm" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                <li v-for="(p, i) in matchSummary.best_players" :key="i" class="flex justify-between items-center">
+                  <span>{{ p.player_name.split(' ').pop() }}</span>
+                  <span :class="cn('text-xs', isDarkMode ? 'text-emerald-400' : 'text-emerald-600')">+{{ p.net_impact?.toFixed(1) }} · {{ p.highlights_count }} highlights</span>
+                </li>
+              </ul>
+            </div>
+
+            <div v-if="matchSummary.players_needing_improvement?.length">
+              <div class="flex items-center gap-2 mb-2">
+                <Icon name="lucide:alert-triangle" class="w-4 h-4 text-amber-400" />
+                <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-amber-400' : 'text-amber-600')">Need improvement</span>
+              </div>
+              <ul class="space-y-1.5 text-sm" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                <li v-for="(p, i) in matchSummary.players_needing_improvement" :key="i" class="flex justify-between items-center">
+                  <span>{{ p.player_name.split(' ').pop() }}</span>
+                  <span :class="cn('text-xs', isDarkMode ? 'text-amber-400' : 'text-amber-600')">{{ p.net_impact?.toFixed(1) }} · {{ p.lowlights_count }} lowlights</span>
+                </li>
+              </ul>
+            </div>
+
+            <div v-if="matchSummary.team_improvements?.length">
+              <div class="flex items-center gap-2 mb-2">
+                <Icon name="lucide:users" class="w-4 h-4 text-blue-400" />
+                <span :class="cn('text-xs font-semibold', isDarkMode ? 'text-blue-400' : 'text-blue-600')">Team improvements</span>
+              </div>
+              <ul class="list-disc list-inside text-sm space-y-1" :class="isDarkMode ? 'text-white/70' : 'text-gray-600'">
+                <li v-for="(item, i) in matchSummary.team_improvements" :key="i">{{ item }}</li>
+              </ul>
+            </div>
+          </div>
+
+          <div v-else class="text-sm text-center py-4" :class="isDarkMode ? 'text-white/50' : 'text-gray-500'">
+            Select a match to see the full summary.
+          </div>
         </UiCard>
 
         <!-- Security Badge -->
@@ -1399,350 +1747,5 @@ const audioWaveHeights = Array.from({ length: 40 }, () => Math.random() * 100);
       </div>
     </div>
 
-    <!-- Video Source Modal -->
-    <Teleport to="body">
-      <div
-        v-if="showVideoSourceModal"
-        class="fixed inset-0 z-[100] flex items-center justify-center p-4"
-      >
-        <!-- Backdrop -->
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          @click="showVideoSourceModal = false"
-        ></div>
-
-        <!-- Modal Content -->
-        <div
-          :class="
-            cn(
-              'relative w-full max-w-lg rounded-2xl border shadow-2xl p-8',
-              isDarkMode
-                ? 'bg-[#12141f] border-white/10'
-                : 'bg-white border-gray-200'
-            )
-          "
-        >
-          <!-- Close Button -->
-          <button
-            @click="showVideoSourceModal = false"
-            :class="
-              cn(
-                'absolute top-4 right-4 p-2 rounded-lg transition-colors',
-                isDarkMode
-                  ? 'hover:bg-white/10 text-white/50'
-                  : 'hover:bg-gray-100 text-gray-400'
-              )
-            "
-          >
-            <Icon name="lucide:x" class="w-5 h-5" />
-          </button>
-
-          <!-- Header -->
-          <div class="flex items-center gap-3 mb-6">
-            <div
-              class="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center"
-            >
-              <Icon name="lucide:video" class="w-6 h-6 text-emerald-400" />
-            </div>
-            <div>
-              <h3
-                :class="
-                  cn(
-                    'text-xl font-semibold',
-                    isDarkMode ? 'text-white' : 'text-gray-900'
-                  )
-                "
-              >
-                Add Video Source
-              </h3>
-              <p
-                :class="
-                  cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')
-                "
-              >
-                Upload footage or paste a YouTube link
-              </p>
-            </div>
-          </div>
-
-          <!-- Source Selection Tabs -->
-          <div class="flex gap-2 mb-6">
-            <button
-              @click="selectVideoSource('youtube')"
-              :class="
-                cn(
-                  'flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border transition-all',
-                  videoSourceType === 'youtube'
-                    ? 'bg-red-500/10 border-red-500/30 text-red-400'
-                    : isDarkMode
-                    ? 'bg-[#0a0b14] border-white/10 text-white/60 hover:border-white/20'
-                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'
-                )
-              "
-            >
-              <Icon name="lucide:youtube" class="w-5 h-5" />
-              <span class="font-medium">YouTube Link</span>
-            </button>
-            <button
-              @click="selectVideoSource('upload')"
-              :class="
-                cn(
-                  'flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border transition-all',
-                  videoSourceType === 'upload'
-                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                    : isDarkMode
-                    ? 'bg-[#0a0b14] border-white/10 text-white/60 hover:border-white/20'
-                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'
-                )
-              "
-            >
-              <Icon name="lucide:upload" class="w-5 h-5" />
-              <span class="font-medium">Upload Video</span>
-            </button>
-          </div>
-
-          <!-- YouTube Input -->
-          <div v-if="videoSourceType === 'youtube'" class="mb-6">
-            <label
-              :class="
-                cn(
-                  'block text-sm font-medium mb-2',
-                  isDarkMode ? 'text-white/70' : 'text-gray-700'
-                )
-              "
-            >
-              YouTube URL
-            </label>
-            <div class="relative">
-              <div
-                class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
-              >
-                <Icon
-                  name="lucide:link"
-                  :class="
-                    cn(
-                      'w-4 h-4',
-                      isDarkMode ? 'text-white/40' : 'text-gray-400'
-                    )
-                  "
-                />
-              </div>
-              <input
-                v-model="youtubeUrl"
-                type="url"
-                placeholder="https://youtube.com/watch?v=..."
-                :class="
-                  cn(
-                    'w-full pl-11 pr-4 py-3 rounded-xl border text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/50',
-                    isDarkMode
-                      ? 'bg-[#0a0b14] border-white/10 text-white placeholder-white/30 focus:border-red-500/50'
-                      : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400 focus:border-red-400'
-                  )
-                "
-                @keyup.enter="startAnalysis"
-              />
-            </div>
-            <p
-              :class="
-                cn(
-                  'text-xs mt-2',
-                  isDarkMode ? 'text-white/40' : 'text-gray-400'
-                )
-              "
-            >
-              Paste the full YouTube URL of your match footage
-            </p>
-          </div>
-
-          <!-- Upload Input -->
-          <div v-if="videoSourceType === 'upload'" class="mb-6">
-            <label
-              :class="
-                cn(
-                  'block text-sm font-medium mb-2',
-                  isDarkMode ? 'text-white/70' : 'text-gray-700'
-                )
-              "
-            >
-              Video File
-            </label>
-            <div
-              :class="
-                cn(
-                  'border-2 border-dashed rounded-xl p-6 text-center transition-colors',
-                  uploadedFileName
-                    ? isDarkMode
-                      ? 'border-emerald-500/30 bg-emerald-500/5'
-                      : 'border-emerald-300 bg-emerald-50'
-                    : isDarkMode
-                    ? 'border-white/10 hover:border-white/20'
-                    : 'border-gray-200 hover:border-gray-300'
-                )
-              "
-            >
-              <input
-                type="file"
-                accept="video/*"
-                class="hidden"
-                id="video-upload"
-                @change="handleFileUpload"
-              />
-              <label for="video-upload" class="cursor-pointer">
-                <div
-                  v-if="uploadedFileName"
-                  class="flex items-center justify-center gap-2"
-                >
-                  <Icon
-                    name="lucide:file-video"
-                    class="w-8 h-8 text-emerald-400"
-                  />
-                  <div class="text-left">
-                    <p
-                      :class="
-                        cn(
-                          'font-medium',
-                          isDarkMode ? 'text-white' : 'text-gray-900'
-                        )
-                      "
-                    >
-                      {{ uploadedFileName }}
-                    </p>
-                    <p
-                      :class="
-                        cn(
-                          'text-xs',
-                          isDarkMode ? 'text-white/50' : 'text-gray-500'
-                        )
-                      "
-                    >
-                      Click to change file
-                    </p>
-                  </div>
-                </div>
-                <div v-else>
-                  <Icon
-                    name="lucide:upload-cloud"
-                    :class="
-                      cn(
-                        'w-10 h-10 mx-auto mb-2',
-                        isDarkMode ? 'text-white/30' : 'text-gray-300'
-                      )
-                    "
-                  />
-                  <p
-                    :class="
-                      cn(
-                        'font-medium',
-                        isDarkMode ? 'text-white/70' : 'text-gray-600'
-                      )
-                    "
-                  >
-                    Click to upload video
-                  </p>
-                  <p
-                    :class="
-                      cn(
-                        'text-xs mt-1',
-                        isDarkMode ? 'text-white/40' : 'text-gray-400'
-                      )
-                    "
-                  >
-                    MP4, MOV, AVI up to 2GB
-                  </p>
-                </div>
-              </label>
-            </div>
-          </div>
-
-          <!-- No selection prompt -->
-          <div
-            v-if="videoSourceType === 'none'"
-            :class="
-              cn(
-                'rounded-xl p-6 mb-6 text-center border',
-                isDarkMode
-                  ? 'bg-[#0a0b14] border-white/10'
-                  : 'bg-gray-50 border-gray-100'
-              )
-            "
-          >
-            <Icon
-              name="lucide:mouse-pointer-click"
-              :class="
-                cn(
-                  'w-8 h-8 mx-auto mb-2',
-                  isDarkMode ? 'text-white/30' : 'text-gray-300'
-                )
-              "
-            />
-            <p
-              :class="
-                cn('text-sm', isDarkMode ? 'text-white/50' : 'text-gray-500')
-              "
-            >
-              Select a video source above to continue
-            </p>
-          </div>
-
-          <!-- Actions -->
-          <div class="flex gap-3">
-            <UiButton
-              variant="outline"
-              :class="
-                cn(
-                  'flex-1',
-                  isDarkMode
-                    ? 'border-white/20 text-white/70 hover:bg-white/5'
-                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-                )
-              "
-              @click="showVideoSourceModal = false"
-            >
-              Cancel
-            </UiButton>
-            <UiButton
-              :class="
-                cn(
-                  'flex-1',
-                  (videoSourceType === 'youtube' && youtubeUrl.trim()) ||
-                    (videoSourceType === 'upload' && uploadedFileName)
-                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                    : isDarkMode
-                    ? 'bg-white/10 text-white/30 cursor-not-allowed'
-                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                )
-              "
-              :disabled="
-                !(
-                  (videoSourceType === 'youtube' && youtubeUrl.trim()) ||
-                  (videoSourceType === 'upload' && uploadedFileName)
-                )
-              "
-              @click="startAnalysis"
-            >
-              <Icon name="lucide:sparkles" class="w-4 h-4 mr-2" />
-              Analyze Video
-            </UiButton>
-          </div>
-
-          <!-- Info footer -->
-          <div class="mt-6 flex items-center justify-center gap-2">
-            <Icon
-              name="lucide:info"
-              :class="
-                cn('w-4 h-4', isDarkMode ? 'text-white/30' : 'text-gray-300')
-              "
-            />
-            <span
-              :class="
-                cn('text-xs', isDarkMode ? 'text-white/40' : 'text-gray-400')
-              "
-            >
-              AI will analyze the video and generate personalized insights
-            </span>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
