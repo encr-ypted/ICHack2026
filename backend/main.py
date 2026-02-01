@@ -3,6 +3,7 @@ CoachOS Highlight Engine - ML-Driven Event Analysis
 Uses trained models to identify True Highlights based on execution difficulty and match context.
 """
 import math
+import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from urllib.parse import unquote
@@ -16,18 +17,29 @@ from pydantic import BaseModel
 
 from ultils.match_loader import get_match_events, get_match_lineups
 
+# Check if statsbombpy is available for fetching new data
+try:
+    from statsbombpy import sb
+    HAS_STATSBOMB = True
+except ImportError:
+    HAS_STATSBOMB = False
+
 # --- CONFIGURATION ---
 MATCH_ID = 3869151
 MODELS_DIR = Path(__file__).parent / "models"
 
-# World Cup 2022 matches - match_id, match_title (for cache filename), display_name
-# 3869151 first (has cached data); others require statsbombpy to fetch
+# World Cup 2022 matches - All Argentina matches
+# Cached data exists for most; others will be fetched from StatsBomb if statsbombpy is installed
 WORLD_CUP_MATCHES = [
-    {"match_id": 3869151, "match_title": "argentina_v_france", "label": "Argentina vs Australia (R16)", "stage": "Round of 16"},
-    {"match_id": 3869685, "match_title": "argentina_v_france_final", "label": "Argentina vs France (Final)", "stage": "Final"},
-    {"match_id": 3869519, "match_title": "argentina_v_croatia", "label": "Argentina vs Croatia (Semi-final)", "stage": "Semi-finals"},
-    {"match_id": 3869321, "match_title": "netherlands_v_argentina", "label": "Netherlands vs Argentina (Quarter-final)", "stage": "Quarter-finals"},
-    {"match_id": 3857289, "match_title": "argentina_v_mexico", "label": "Argentina vs Mexico (Group C)", "stage": "Group Stage"},
+    # Group Stage
+    {"match_id": 3857300, "match_title": "argentina_v_saudi_arabia", "label": "Argentina 1-2 Saudi Arabia", "stage": "Group Stage", "date": "2022-11-22"},
+    {"match_id": 3857289, "match_title": "argentina_v_mexico", "label": "Argentina 2-0 Mexico", "stage": "Group Stage", "date": "2022-11-26"},
+    {"match_id": 3857264, "match_title": "poland_v_argentina", "label": "Poland 0-2 Argentina", "stage": "Group Stage", "date": "2022-11-30"},
+    # Knockout Stage
+    {"match_id": 3869151, "match_title": "argentina_v_france", "label": "Argentina 2-1 Australia (R16)", "stage": "Round of 16", "date": "2022-12-03"},
+    {"match_id": 3869321, "match_title": "netherlands_v_argentina", "label": "Netherlands 2-2 Argentina (QF)", "stage": "Quarter-finals", "date": "2022-12-09"},
+    {"match_id": 3869519, "match_title": "argentina_v_croatia", "label": "Argentina 3-0 Croatia (SF)", "stage": "Semi-finals", "date": "2022-12-13"},
+    {"match_id": 3869685, "match_title": "argentina_v_france_final", "label": "Argentina 3-3 France (Final)", "stage": "Final", "date": "2022-12-18"},
 ]
 
 # FIFA+ Base URL (manual scrubbing required - no timestamp parameters supported)
@@ -1897,9 +1909,185 @@ async def get_matches():
     """Get list of available World Cup 2022 matches."""
     return {
         "matches": [
-            {"match_id": m["match_id"], "label": m["label"], "stage": m["stage"]}
+            {
+                "match_id": m["match_id"], 
+                "label": m["label"], 
+                "stage": m["stage"],
+                "date": m.get("date")
+            }
             for m in WORLD_CUP_MATCHES
         ]
+    }
+
+
+# ============================================
+# DATA MANAGEMENT ENDPOINTS
+# ============================================
+
+@app.get("/api/data/status")
+async def get_data_status():
+    """Get status of cached match data - which matches have data available."""
+    from ultils.match_loader import DATA_DIR
+    
+    statuses = []
+    for m in WORLD_CUP_MATCHES:
+        match_id = m["match_id"]
+        match_title = m["match_title"]
+        
+        events_file = os.path.join(DATA_DIR, f"match_{match_title}_events_{match_id}.json")
+        lineups_file = os.path.join(DATA_DIR, f"match_{match_title}_lineups_{match_id}.json")
+        
+        has_events = os.path.exists(events_file)
+        has_lineups = os.path.exists(lineups_file)
+        
+        # Get file sizes if they exist
+        events_size = os.path.getsize(events_file) if has_events else 0
+        lineups_size = os.path.getsize(lineups_file) if has_lineups else 0
+        
+        statuses.append({
+            "match_id": match_id,
+            "match_title": match_title,
+            "label": m["label"],
+            "stage": m["stage"],
+            "date": m.get("date"),
+            "has_events": has_events,
+            "has_lineups": has_lineups,
+            "is_complete": has_events and has_lineups,
+            "events_size_kb": round(events_size / 1024, 1),
+            "lineups_size_kb": round(lineups_size / 1024, 1),
+            "total_size_kb": round((events_size + lineups_size) / 1024, 1)
+        })
+    
+    total_cached = sum(1 for s in statuses if s["is_complete"])
+    
+    return {
+        "total_matches": len(WORLD_CUP_MATCHES),
+        "cached_matches": total_cached,
+        "missing_matches": len(WORLD_CUP_MATCHES) - total_cached,
+        "statsbomb_available": HAS_STATSBOMB,
+        "matches": statuses
+    }
+
+
+@app.post("/api/data/fetch/{match_id}")
+async def fetch_match_data(match_id: int):
+    """Fetch match data from StatsBomb and cache it locally."""
+    if not HAS_STATSBOMB:
+        raise HTTPException(
+            status_code=503, 
+            detail="statsbombpy not installed. Install with: pip install statsbombpy"
+        )
+    
+    # Find match config
+    match_config = next((m for m in WORLD_CUP_MATCHES if m["match_id"] == match_id), None)
+    if not match_config:
+        raise HTTPException(status_code=404, detail=f"Match {match_id} not in configured matches")
+    
+    try:
+        from ultils.match_loader import get_match_events, get_match_lineups
+        
+        # This will fetch from StatsBomb if not cached
+        events = get_match_events(match_id, match_config["match_title"])
+        lineups = get_match_lineups(match_id, match_config["match_title"])
+        
+        # Clear any cached data for this match
+        if match_id in _match_cache:
+            del _match_cache[match_id]
+        if match_id in _match_summary_cache:
+            del _match_summary_cache[match_id]
+        
+        event_count = len(events) if isinstance(events, list) else len(events.get("events", []))
+        team_count = len(lineups) if isinstance(lineups, dict) else 0
+        
+        return {
+            "success": True,
+            "match_id": match_id,
+            "label": match_config["label"],
+            "events_loaded": event_count,
+            "teams_loaded": list(lineups.keys()) if isinstance(lineups, dict) else []
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/data/delete/{match_id}")
+async def delete_match_data(match_id: int):
+    """Delete cached match data."""
+    from ultils.match_loader import DATA_DIR
+    
+    # Find match config
+    match_config = next((m for m in WORLD_CUP_MATCHES if m["match_id"] == match_id), None)
+    if not match_config:
+        raise HTTPException(status_code=404, detail=f"Match {match_id} not in configured matches")
+    
+    match_title = match_config["match_title"]
+    events_file = os.path.join(DATA_DIR, f"match_{match_title}_events_{match_id}.json")
+    lineups_file = os.path.join(DATA_DIR, f"match_{match_title}_lineups_{match_id}.json")
+    
+    deleted_files = []
+    
+    try:
+        if os.path.exists(events_file):
+            os.remove(events_file)
+            deleted_files.append("events")
+        
+        if os.path.exists(lineups_file):
+            os.remove(lineups_file)
+            deleted_files.append("lineups")
+        
+        # Clear cache
+        if match_id in _match_cache:
+            del _match_cache[match_id]
+        if match_id in _match_summary_cache:
+            del _match_summary_cache[match_id]
+        
+        return {
+            "success": True,
+            "match_id": match_id,
+            "label": match_config["label"],
+            "deleted": deleted_files
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/data/fetch-all")
+async def fetch_all_match_data():
+    """Fetch all missing match data from StatsBomb."""
+    if not HAS_STATSBOMB:
+        raise HTTPException(
+            status_code=503, 
+            detail="statsbombpy not installed. Install with: pip install statsbombpy"
+        )
+    
+    from ultils.match_loader import DATA_DIR, get_match_events, get_match_lineups
+    
+    results = []
+    for m in WORLD_CUP_MATCHES:
+        match_id = m["match_id"]
+        match_title = m["match_title"]
+        
+        events_file = os.path.join(DATA_DIR, f"match_{match_title}_events_{match_id}.json")
+        lineups_file = os.path.join(DATA_DIR, f"match_{match_title}_lineups_{match_id}.json")
+        
+        # Skip if already cached
+        if os.path.exists(events_file) and os.path.exists(lineups_file):
+            results.append({"match_id": match_id, "label": m["label"], "status": "already_cached"})
+            continue
+        
+        try:
+            get_match_events(match_id, match_title)
+            get_match_lineups(match_id, match_title)
+            results.append({"match_id": match_id, "label": m["label"], "status": "fetched"})
+        except Exception as e:
+            results.append({"match_id": match_id, "label": m["label"], "status": "error", "error": str(e)})
+    
+    return {
+        "success": True,
+        "results": results,
+        "fetched": sum(1 for r in results if r["status"] == "fetched"),
+        "already_cached": sum(1 for r in results if r["status"] == "already_cached"),
+        "errors": sum(1 for r in results if r["status"] == "error")
     }
 
 

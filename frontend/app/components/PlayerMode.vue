@@ -4,6 +4,7 @@ import { computed, ref, onMounted, watch } from "vue";
 import PitchMap from "~/components/PitchMap.vue";
 import AdvancedAnalytics from "~/components/AdvancedAnalytics.vue";
 import PlayerComparison from "~/components/PlayerComparison.vue";
+import DataManager from "~/components/DataManager.vue";
 
 const emit = defineEmits<{
   navigate: [screen: "landing" | "coach" | "player"];
@@ -140,6 +141,7 @@ interface MatchOption {
   match_id: number;
   label: string;
   stage: string;
+  date?: string;
 }
 const matches = ref<MatchOption[]>([]);
 const selectedMatchId = ref<number | null>(null);
@@ -553,7 +555,7 @@ onMounted(() => {
                   :key="m.match_id"
                   :value="m.match_id"
                 >
-                  {{ m.label }}
+                  {{ m.date ? `${m.date.split('-').slice(1).join('/')} - ` : '' }}{{ m.label }}
                 </option>
               </select>
             </div>
@@ -1634,67 +1636,6 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Voice Playback -->
-        <UiCard
-          :class="
-            cn(
-              'p-6',
-              isDarkMode
-                ? 'bg-[#12141f] border-blue-500/30'
-                : 'bg-white border-blue-300'
-            )
-          "
-        >
-          <div class="flex items-center gap-2 mb-4">
-            <Icon name="lucide:volume-2" class="w-5 h-5 text-blue-400" />
-            <h3 class="font-semibold">Audio Mentoring</h3>
-          </div>
-
-          <div
-            :class="
-              cn(
-                'rounded-lg p-4 mb-3',
-                isDarkMode ? 'bg-[#0a0b14]' : 'bg-blue-50'
-              )
-            "
-          >
-            <div class="flex items-center gap-3 mb-3">
-              <UiButton
-                size="sm"
-                class="bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30"
-              >
-                <Icon name="lucide:play" class="w-3 h-3" />
-              </UiButton>
-              <div class="flex-1 flex gap-0.5 items-end h-8">
-                <div
-                  v-for="(height, i) in audioWaveHeights"
-                  :key="i"
-                  class="flex-1 bg-blue-400/50 rounded-full"
-                  :style="{ height: `${height}%` }"
-                ></div>
-              </div>
-            </div>
-            <div
-              :class="
-                cn('text-xs', isDarkMode ? 'text-white/50' : 'text-gray-500')
-              "
-            >
-              Mentoring Voice via ElevenLabs
-            </div>
-          </div>
-
-          <p
-            :class="
-              cn(
-                'text-sm italic',
-                isDarkMode ? 'text-white/60' : 'text-gray-600'
-              )
-            "
-          >
-            "Marcus, you were elite in transition today, but let's work on your
-            composure in the box..."
-          </p>
-        </UiCard>
       </div>
 
       <!-- Right Column - Training Drills -->
@@ -1833,6 +1774,23 @@ onMounted(() => {
             :matchId="selectedMatchId"
             :players="players"
             :isDarkMode="isDarkMode"
+          />
+        </UiCard>
+
+        <!-- Data Manager -->
+        <UiCard
+          :class="
+            cn(
+              'p-6',
+              isDarkMode
+                ? 'bg-[#12141f] border-purple-500/30'
+                : 'bg-white border-purple-300'
+            )
+          "
+        >
+          <DataManager
+            :isDarkMode="isDarkMode"
+            @dataChanged="fetchMatches"
           />
         </UiCard>
 
