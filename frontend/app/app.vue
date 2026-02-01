@@ -2,9 +2,13 @@
 type Screen = "landing" | "coach" | "player";
 
 const currentScreen = ref<Screen>("landing");
+const streamLink = ref<string>("");
 
-const handleNavigation = (screen: Screen) => {
+const handleNavigation = (screen: Screen, link?: string) => {
   currentScreen.value = screen;
+  if (link) {
+    streamLink.value = link;
+  }
 };
 </script>
 
@@ -16,6 +20,7 @@ const handleNavigation = (screen: Screen) => {
     />
     <CoachMode
       v-else-if="currentScreen === 'coach'"
+      :stream-link="streamLink"
       @navigate="handleNavigation"
     />
     <PlayerMode
