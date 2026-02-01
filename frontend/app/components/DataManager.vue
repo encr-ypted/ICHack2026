@@ -204,16 +204,13 @@ async function fetchAllMissing() {
   }
 }
 
-// Watch for competition change
-watch(selectedCompetition, () => {
-  selectedTeam.value = "all"; // Reset team filter when competition changes
-  loadStatus();
+// Reset team when competition changes
+watch(selectedCompetition, (_newVal, oldVal) => {
+  if (oldVal !== undefined) selectedTeam.value = "all";
 });
 
-// Watch for team change
-watch(selectedTeam, () => {
-  loadStatus();
-});
+// Load status when competition or team changes
+watch([selectedCompetition, selectedTeam], () => loadStatus(), { immediate: false });
 
 // Load when modal opens
 watch(() => props.isOpen, (open) => {
@@ -292,8 +289,8 @@ onMounted(() => {
                 :class="cn(
                   'px-3 py-1.5 rounded-lg text-sm border font-medium',
                   isDarkMode
-                    ? 'bg-purple-500/20 border-purple-500/30 text-purple-300'
-                    : 'bg-purple-50 border-purple-300 text-purple-700'
+                    ? 'bg-[#0a0b14] text-white border-white/20 focus:border-purple-500/50'
+                    : 'bg-white text-gray-900 border-gray-300'
                 )"
               >
                 <option v-for="comp in competitions" :key="comp.id" :value="comp.id">
@@ -310,8 +307,8 @@ onMounted(() => {
                 :class="cn(
                   'px-3 py-1.5 rounded-lg text-sm border',
                   isDarkMode
-                    ? 'bg-[#12141f] border-white/10 text-white'
-                    : 'bg-white border-gray-300'
+                    ? 'bg-[#0a0b14] text-white border-white/20 focus:border-purple-500/50'
+                    : 'bg-white text-gray-900 border-gray-300'
                 )"
               >
                 <option value="all">All Teams</option>

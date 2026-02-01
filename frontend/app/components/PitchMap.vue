@@ -141,7 +141,9 @@ function getHeatColor(type: string) {
           orient="auto"
           markerUnits="strokeWidth"
         >
-          <path d="M0,0 L0,6 L9,3 z" :fill="actionColor" />
+          <path d="M0,0 L0,6 L9,3 z" :fill="actionColor">
+            <animate attributeName="opacity" values="0.85;1;0.85" dur="1.2s" repeatCount="indefinite" />
+          </path>
         </marker>
       </defs>
 
@@ -238,7 +240,7 @@ function getHeatColor(type: string) {
           stroke-width="2"
           opacity="0.3"
         />
-        <!-- Main line -->
+        <!-- Main line with flow animation for successful passes -->
         <line
           :x1="activeAction.start_coords[0]"
           :y1="activeAction.start_coords[1]"
@@ -248,6 +250,7 @@ function getHeatColor(type: string) {
           stroke-width="0.8"
           :stroke-dasharray="isSuccess ? 'none' : '2,1'"
           :marker-end="isSuccess ? 'url(#' + arrowId + ')' : ''"
+          :class="isSuccess ? 'pass-line-animated' : ''"
         />
         <!-- Start point -->
         <circle :cx="activeAction.start_coords[0]" :cy="activeAction.start_coords[1]" r="3" :fill="actionColor" fill-opacity="0.3" />
@@ -295,3 +298,14 @@ function getHeatColor(type: string) {
     </svg>
   </div>
 </template>
+
+<style scoped>
+.pass-line-animated {
+  animation: line-flow 1s ease-in-out infinite;
+}
+
+@keyframes line-flow {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; }
+}
+</style>
